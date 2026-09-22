@@ -1,0 +1,12 @@
+# Normalise text files to LF so the Gradle wrapper still runs on Linux and macOS.
+* text=auto eol=lf
+
+# Windows scripts need CRLF to run from cmd.exe.
+*.bat text eol=crlf
+
+# Keep binary assets untouched.
+*.jar binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.apk binary

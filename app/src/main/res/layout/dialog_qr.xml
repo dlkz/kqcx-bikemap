@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:gravity="center_horizontal"
+    android:orientation="vertical"
+    android:paddingStart="22dp"
+    android:paddingTop="6dp"
+    android:paddingEnd="22dp"
+    android:paddingBottom="4dp">
+
+    <ImageView
+        android:id="@+id/qrImage"
+        android:layout_width="match_parent"
+        android:layout_height="280dp"
+        android:adjustViewBounds="true"
+        android:background="?android:attr/selectableItemBackground"
+        android:clickable="true"
+        android:contentDescription="@string/save_qr"
+        android:focusable="true" />
+
+    <TextView
+        android:id="@+id/tvQrUrl"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:gravity="center"
+        android:textColor="@color/text_secondary"
+        android:textIsSelectable="true"
+        android:textSize="13sp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="center"
+        android:lineSpacingExtra="2dp"
+        android:text="@string/qr_hint"
+        android:textColor="@color/text_tertiary"
+        android:textSize="12sp" />
+
+    <LinearLayout
+        android:id="@+id/qrActions"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnCopyQr"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:backgroundTint="@color/surface_soft"
+            android:text="@string/copy_link"
+            android:textAllCaps="false"
+            android:textColor="@color/brand_green_dark" />
+    </LinearLayout>
+
+    <Button
+        android:id="@+id/btnQrWechat"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:layout_marginTop="10dp"
+        android:backgroundTint="@color/brand_green"
+        android:text="@string/qr_wechat_scan"
+        android:textAllCaps="false"
+        android:textColor="@android:color/white" />
+</LinearLayout>

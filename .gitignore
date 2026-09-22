@@ -1,0 +1,37 @@
+# Android and Gradle
+.gradle/
+**/build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Signing files and local secrets
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+keystore.properties
+secrets.properties
+.env
+.env.*
+
+# Generated diagnostics, screenshots and UI dumps
+.diag/
+.tile-tests/
+.tmp-*
+*.log
+/*.png
+/*.jpg
+/*.jpeg
+/*.xml
+
+# Build outputs and archives
+*.apk
+*.aab
+*.zip

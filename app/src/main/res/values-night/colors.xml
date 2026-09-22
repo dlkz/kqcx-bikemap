@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="brand_green">#44B99A</color>
+    <color name="brand_green_dark">#7ED8BD</color>
+    <color name="selection_accent">#F0A35D</color>
+    <color name="text_primary">#EEF4F1</color>
+    <color name="text_secondary">#B7C3BE</color>
+    <color name="text_tertiary">#8E9D97</color>
+    <color name="surface">#18201D</color>
+    <color name="surface_soft">#101613</color>
+    <color name="divider">#2EFFFFFF</color>
+    <color name="warning">#F0A35D</color>
+</resources>
