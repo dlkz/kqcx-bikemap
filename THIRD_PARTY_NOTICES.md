@@ -17,7 +17,6 @@
 - 许可证：Apache License 2.0
 - 项目链接：https://github.com/osmdroid/osmdroid
 
-
 ### ZXing Core 3.4.1
 
 - 作者：ZXing Authors
