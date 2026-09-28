@@ -8,7 +8,7 @@
         android:fillColor="@color/surface"
         android:pathData="M12,2A10,10 0 1,0 12,22A10,10 0 1,0 12,2Z" />
     <path
-        android:fillColor="@color/brand_green"
+        android:fillColor="@color/settings_control_accent"
         android:pathData="M12,3.6A8.4,8.4 0 1,0 12,20.4A8.4,8.4 0 1,0 12,3.6ZM12,5.2A6.8,6.8 0 1,1 12,18.8A6.8,6.8 0 1,1 12,5.2Z"
         android:fillType="evenOdd" />
 </vector>

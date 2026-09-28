@@ -1,10 +1,13 @@
 package com.kqcx.bikemap;
 
-import android.content.pm.PackageManager;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
@@ -17,16 +20,25 @@ public final class AboutActivity extends BaseActivity {
         setContentView(R.layout.activity_about);
 
         findViewById(R.id.btnAboutBack).setOnClickListener(view -> finish());
+        findViewById(R.id.rowAboutRepository).setOnClickListener(view -> openRepository());
         TextView versionView = findViewById(R.id.tvAboutVersion);
-        versionView.setText(getString(R.string.version_format, versionName()));
+        versionView.setText(versionNumberLabel());
         applySystemBarInsets();
     }
 
-    private String versionName() {
+    private void openRepository() {
+        Intent intent = new Intent(
+                Intent.ACTION_VIEW,
+                Uri.parse(getString(R.string.about_repository_url))
+        );
         try {
-            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
-        } catch (PackageManager.NameNotFoundException exception) {
-            return "1.0.1";
+            startActivity(intent);
+        } catch (ActivityNotFoundException exception) {
+            Toast.makeText(
+                    this,
+                    R.string.about_repository_open_failed,
+                    Toast.LENGTH_SHORT
+            ).show();
         }
     }
 

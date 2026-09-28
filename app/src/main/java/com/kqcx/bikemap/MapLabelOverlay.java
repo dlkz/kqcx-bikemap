@@ -1,6 +1,7 @@
 package com.kqcx.bikemap;
 
 import android.content.Context;
+import android.content.res.Configuration;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -42,11 +43,17 @@ public final class MapLabelOverlay extends Overlay {
         this.labels = labels;
         density = context.getResources().getDisplayMetrics().density;
 
-        fillPaint.setColor(Color.argb(236, 255, 255, 255));
+        boolean dark = (context.getResources().getConfiguration().uiMode
+                & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+        fillPaint.setColor(dark
+                ? Color.argb(238, 31, 33, 38)
+                : Color.argb(238, 247, 247, 244));
         strokePaint.setStyle(Paint.Style.STROKE);
         strokePaint.setStrokeWidth(Math.max(1f, density));
-        strokePaint.setColor(Color.argb(56, 38, 50, 56));
-        textPaint.setColor(Color.rgb(38, 50, 56));
+        strokePaint.setColor(Color.TRANSPARENT);
+        textPaint.setColor(dark
+                ? Color.argb(222, 255, 255, 255)
+                : Color.argb(222, 31, 33, 38));
         textPaint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
     }
 

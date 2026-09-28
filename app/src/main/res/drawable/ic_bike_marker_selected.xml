@@ -1,22 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="48dp"
-    android:height="48dp"
+    android:width="40dp"
+    android:height="40dp"
     android:viewportWidth="48"
     android:viewportHeight="48">
     <path
         android:fillColor="@color/surface"
-        android:pathData="M24,3A21,21 0,1 0,24 45A21,21 0,1 0,24 3" />
-    <path
-        android:fillColor="@android:color/transparent"
-        android:pathData="M24,4.5A19.5,19.5 0,1 0,24 43.5A19.5,19.5 0,1 0,24 4.5"
+        android:pathData="M24,3.5A20.5,20.5 0,1 0,24 44.5A20.5,20.5 0,1 0,24 3.5"
         android:strokeColor="@color/selection_accent"
         android:strokeWidth="3" />
     <path
         android:fillColor="@android:color/transparent"
-        android:pathData="M17,33a5,5 0,1 0,10 0a5,5 0,1 0,-10 0M29,33a5,5 0,1 0,10 0a5,5 0,1 0,-10 0M22,33l6,-13h6M26,20h6M28,20l5,13"
+        android:pathData="M11,30m-7,0a7,7 0,1 0,14,0a7,7 0,1 0,-14,0M35,30m-7,0a7,7 0,1 0,14,0a7,7 0,1 0,-14,0M11,30L19,19L27,19L35,30M19,19L24,30M27,19L31,30M24,30L31,30M21,19L19,15M17,15L25,15M29,10L34,10M34,10L34,15M34,15L31,10"
         android:strokeColor="@color/selection_accent"
         android:strokeLineCap="round"
         android:strokeLineJoin="round"
-        android:strokeWidth="2.2" />
+        android:strokeWidth="2.4" />
 </vector>

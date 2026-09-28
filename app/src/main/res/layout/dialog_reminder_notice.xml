@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingStart="22dp"
+    android:paddingTop="18dp"
+    android:paddingEnd="22dp"
+    android:paddingBottom="2dp">
+
+    <ScrollView
+        android:id="@+id/reminderNoticeScroll"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:scrollbars="vertical">
+
+        <TextView
+            android:id="@+id/tvReminderNoticeMessage"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:lineSpacingExtra="4dp"
+            android:textColor="@color/text_secondary"
+            android:textSize="15sp" />
+    </ScrollView>
+
+    <CheckBox
+        android:id="@+id/cbReminderRiskMute"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="end"
+        android:layout_marginTop="10dp"
+        android:button="@drawable/ic_checkbox_square"
+        android:paddingStart="0dp"
+        android:paddingEnd="0dp"
+        android:text="@string/reminder_risk_mute"
+        android:textColor="@color/text_secondary"
+        android:textSize="12sp" />
+</LinearLayout>

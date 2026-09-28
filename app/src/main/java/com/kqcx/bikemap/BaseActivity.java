@@ -48,4 +48,12 @@ public abstract class BaseActivity extends ComponentActivity {
         boolean dark = THEME_DARK.equals(mode) || (THEME_SYSTEM.equals(mode) && systemDark);
         setTheme(dark ? R.style.AppTheme_Dark : R.style.AppTheme);
     }
+
+    protected String versionNumberLabel() {
+        return getString(
+                R.string.version_number_format,
+                BuildConfig.VERSION_NAME,
+                BuildConfig.BUILD_NUMBER
+        );
+    }
 }

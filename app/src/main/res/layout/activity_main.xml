@@ -10,6 +10,20 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <ImageView
+        android:id="@+id/mapCenterIndicator"
+        android:layout_width="26dp"
+        android:layout_height="48dp"
+        android:layout_gravity="center"
+        android:clickable="false"
+        android:contentDescription="@null"
+        android:elevation="6dp"
+        android:focusable="false"
+        android:importantForAccessibility="no"
+        android:src="@drawable/ic_center_target"
+        android:translationY="11dp"
+        android:visibility="gone" />
+
     <LinearLayout
         android:id="@+id/topBanner"
         android:layout_width="match_parent"
@@ -28,25 +42,34 @@
         android:paddingEnd="16dp"
         android:paddingBottom="10dp">
 
-        <TextView
-            android:id="@+id/tvStatus"
+        <LinearLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="@string/status_locating"
-            android:textColor="@color/text_primary"
-            android:textSize="16sp"
-            android:textStyle="bold" />
+            android:gravity="start"
+            android:orientation="vertical">
 
-        <TextView
-            android:id="@+id/tvDataLabel"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:clickable="false"
-            android:focusable="false"
-            android:text="@string/status_live"
-            android:textColor="@color/text_tertiary"
-            android:textSize="12sp" />
+            <TextView
+                android:id="@+id/tvStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:lineSpacingExtra="1dp"
+                android:text="@string/status_locating"
+                android:textColor="@color/text_primary"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvDataLabel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:clickable="false"
+                android:focusable="false"
+                android:text="@string/status_live"
+                android:textColor="@color/text_tertiary"
+                android:textSize="12sp" />
+        </LinearLayout>
 
         <ImageButton
             android:id="@+id/btnSettings"
@@ -65,7 +88,7 @@
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|start"
         android:layout_marginStart="16dp"
-        android:layout_marginBottom="172dp"
+        android:layout_marginBottom="276dp"
         android:orientation="vertical">
 
         <ImageButton
@@ -76,7 +99,23 @@
             android:contentDescription="@string/recenter"
             android:elevation="8dp"
             android:padding="14dp"
-            android:src="@drawable/ic_location" />
+            android:src="@drawable/ic_location"
+            android:tint="@color/map_control_icon" />
+
+        <Space
+            android:layout_width="1dp"
+            android:layout_height="10dp" />
+
+        <ImageButton
+            android:id="@+id/btnReminder"
+            android:layout_width="54dp"
+            android:layout_height="54dp"
+            android:background="@drawable/bg_circle_white"
+            android:contentDescription="@string/reminder_button"
+            android:elevation="8dp"
+            android:padding="14dp"
+            android:src="@drawable/ic_reminder"
+            android:tint="@color/map_control_icon" />
 
         <Space
             android:layout_width="1dp"
@@ -90,7 +129,8 @@
             android:contentDescription="@string/bike_list"
             android:elevation="8dp"
             android:padding="14dp"
-            android:src="@drawable/ic_list" />
+            android:src="@drawable/ic_list"
+            android:tint="@color/map_control_icon" />
     </LinearLayout>
 
     <ImageButton
@@ -99,12 +139,13 @@
         android:layout_height="54dp"
         android:layout_gravity="bottom|end"
         android:layout_marginEnd="16dp"
-        android:layout_marginBottom="172dp"
+        android:layout_marginBottom="276dp"
         android:background="@drawable/bg_circle_white"
         android:contentDescription="@string/refresh"
         android:elevation="8dp"
         android:padding="14dp"
-        android:src="@drawable/ic_refresh" />
+        android:src="@drawable/ic_refresh"
+        android:tint="@color/map_control_icon" />
 
     <LinearLayout
         android:id="@+id/bottomArea"
@@ -151,6 +192,15 @@
                 android:textSize="14sp" />
 
             <TextView
+                android:id="@+id/tvBikeFreshness"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:textColor="@color/text_tertiary"
+                android:textSize="12sp"
+                android:visibility="gone" />
+
+            <TextView
                 android:id="@+id/tvManualNotice"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -173,10 +223,10 @@
                     android:id="@+id/btnShowQr"
                     android:layout_width="match_parent"
                     android:layout_height="48dp"
-                    android:backgroundTint="@color/brand_green"
+                    android:backgroundTint="@color/button_primary"
                     android:text="@string/show_qr"
                     android:textAllCaps="false"
-                    android:textColor="@android:color/white" />
+                    android:textColor="@color/button_primary_text" />
             </LinearLayout>
         </LinearLayout>
 
@@ -191,7 +241,7 @@
                 android:layout_width="0dp"
                 android:layout_height="54dp"
                 android:layout_weight="1"
-                android:backgroundTint="@color/surface"
+                android:backgroundTint="@color/surface_group"
                 android:text="@string/input_number"
                 android:textAllCaps="false"
                 android:textColor="@color/text_primary" />
@@ -205,13 +255,13 @@
                 android:layout_width="0dp"
                 android:layout_height="54dp"
                 android:layout_weight="1.7"
-                android:backgroundTint="@color/brand_green"
+                android:backgroundTint="@color/button_primary"
                 android:drawableStart="@drawable/ic_scan"
                 android:drawablePadding="8dp"
                 android:gravity="center"
                 android:text="@string/scan_button"
                 android:textAllCaps="false"
-                android:textColor="@android:color/white"
+                android:textColor="@color/button_primary_text"
                 android:textSize="16sp" />
         </LinearLayout>
     </LinearLayout>
@@ -282,6 +332,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:background="@drawable/bg_settings_group"
+                    android:elevation="1dp"
                     android:orientation="vertical"
                     android:paddingTop="2dp"
                     android:paddingBottom="2dp">
@@ -405,6 +456,91 @@
                     android:layout_marginTop="22dp"
                     android:paddingStart="4dp"
                     android:paddingBottom="6dp"
+                    android:text="@string/settings_history"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="13sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_settings_group"
+                    android:elevation="1dp"
+                    android:orientation="vertical"
+                    android:paddingTop="2dp"
+                    android:paddingBottom="2dp">
+
+                    <Switch
+                        android:id="@+id/switchKeepHistory"
+                        android:layout_width="match_parent"
+                        android:layout_height="54dp"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="14dp"
+                        android:text="@string/settings_keep_history"
+                        android:textColor="@color/text_primary"
+                        android:textSize="15sp" />
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="22dp"
+                    android:paddingStart="4dp"
+                    android:paddingBottom="6dp"
+                    android:text="@string/settings_storage"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="13sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_settings_group"
+                    android:elevation="1dp"
+                    android:orientation="vertical"
+                    android:paddingTop="2dp"
+                    android:paddingBottom="2dp">
+
+                    <LinearLayout
+                        android:id="@+id/rowClearMapCache"
+                        android:layout_width="match_parent"
+                        android:layout_height="54dp"
+                        android:background="?android:attr/selectableItemBackground"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="14dp">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="@string/settings_clear_map_cache"
+                            android:textColor="@color/text_primary"
+                            android:textSize="15sp" />
+
+                        <TextView
+                            android:id="@+id/tvMapCacheSize"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/map_cache_empty"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="14sp" />
+
+                        <ImageView
+                            android:layout_width="18dp"
+                            android:layout_height="18dp"
+                            android:layout_marginStart="4dp"
+                            android:contentDescription="@null"
+                            android:src="@drawable/ic_chevron" />
+                    </LinearLayout>
+                </LinearLayout>
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="22dp"
+                    android:paddingStart="4dp"
+                    android:paddingBottom="6dp"
                     android:text="@string/settings_advanced"
                     android:textColor="@color/text_secondary"
                     android:textSize="13sp" />
@@ -413,6 +549,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:background="@drawable/bg_settings_group"
+                    android:elevation="1dp"
                     android:orientation="vertical"
                     android:paddingTop="2dp"
                     android:paddingBottom="2dp">
@@ -441,12 +578,54 @@
                             android:id="@+id/checkAdvanced"
                             android:layout_width="34dp"
                             android:layout_height="34dp"
-                            android:buttonTint="@color/text_tertiary"
+                            android:buttonTint="@color/settings_control_accent"
                             android:clickable="false"
                             android:focusable="false"
                             android:importantForAccessibility="no"
                             android:scaleX="0.72"
                             android:scaleY="0.72" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:id="@+id/advancedSection"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:visibility="gone">
+
+                        <View
+                            android:layout_width="match_parent"
+                            android:layout_height="1dp"
+                            android:layout_marginStart="14dp"
+                            android:background="@color/divider" />
+
+                        <LinearLayout
+                            android:id="@+id/rowAdvancedOptions"
+                            android:layout_width="match_parent"
+                            android:layout_height="54dp"
+                            android:background="?android:attr/selectableItemBackground"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal"
+                            android:paddingStart="14dp"
+                            android:paddingEnd="14dp">
+
+                            <TextView
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="@string/settings_advanced_options"
+                                android:textColor="@color/text_primary"
+                                android:textSize="15sp" />
+
+                            <ImageView
+                                android:id="@+id/ivAdvancedOptionsArrow"
+                                android:layout_width="18dp"
+                                android:layout_height="18dp"
+                                android:contentDescription="@null"
+                                android:src="@drawable/ic_chevron" />
+                        </LinearLayout>
                     </LinearLayout>
 
                     <LinearLayout
@@ -487,6 +666,22 @@
                             android:text="@string/settings_enable_copy"
                             android:textColor="@color/text_primary"
                             android:textSize="15sp" />
+
+                        <View
+                            android:layout_width="match_parent"
+                            android:layout_height="1dp"
+                            android:layout_marginStart="28dp"
+                            android:background="@color/divider" />
+
+                        <Switch
+                            android:id="@+id/switchVehicleAlert"
+                            android:layout_width="match_parent"
+                            android:layout_height="52dp"
+                            android:paddingStart="28dp"
+                            android:paddingEnd="14dp"
+                            android:text="@string/settings_vehicle_alert"
+                            android:textColor="@color/text_primary"
+                            android:textSize="15sp" />
                     </LinearLayout>
                 </LinearLayout>
 
@@ -504,6 +699,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:background="@drawable/bg_settings_group"
+                    android:elevation="1dp"
                     android:orientation="vertical"
                     android:paddingTop="2dp"
                     android:paddingBottom="2dp">
@@ -642,6 +838,15 @@
                     android:layout_marginTop="12dp"
                     android:lineSpacingExtra="2dp"
                     android:text="@string/map_gesture_hint"
+                    android:textColor="@color/text_tertiary"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:lineSpacingExtra="2dp"
+                    android:text="@string/vehicle_number_data_updated"
                     android:textColor="@color/text_tertiary"
                     android:textSize="12sp" />
             </LinearLayout>

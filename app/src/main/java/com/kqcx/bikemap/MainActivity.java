@@ -1,18 +1,22 @@
 package com.kqcx.bikemap;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.ComponentName;
 import android.content.Context;
-import android.content.ContentValues;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.graphics.ColorMatrix;
+import android.graphics.ColorMatrixColorFilter;
 import android.graphics.drawable.ColorDrawable;
 import android.location.Location;
 import android.location.LocationListener;
@@ -20,11 +24,13 @@ import android.location.LocationManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
 import android.os.Handler;
+import android.os.CountDownTimer;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.os.SystemClock;
-import android.provider.MediaStore;
+import android.provider.Settings;
+import androidx.core.app.NotificationManagerCompat;
 import android.text.Editable;
 import android.text.InputFilter;
 import android.text.TextWatcher;
@@ -43,6 +49,7 @@ import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
@@ -55,7 +62,8 @@ import androidx.activity.OnBackPressedCallback;
 
 import com.google.zxing.BarcodeFormat;
 import com.google.zxing.WriterException;
-import com.journeyapps.barcodescanner.BarcodeEncoder;
+import com.google.zxing.common.BitMatrix;
+import com.google.zxing.qrcode.QRCodeWriter;
 
 import org.osmdroid.events.MapListener;
 import org.osmdroid.events.ScrollEvent;
@@ -69,35 +77,58 @@ import org.osmdroid.views.overlay.infowindow.InfoWindow;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
-import java.io.IOException;
-import java.io.OutputStream;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 
 public final class MainActivity extends BaseActivity implements LocationListener {
     private static final int REQUEST_LOCATION = 1001;
     private static final int REQUEST_STORAGE = 1003;
-    private static final int VEHICLE_TAIL_LENGTH = 3;
-    private static final long VEHICLE_NUMBER_BASE = 100000000L;
+    private static final int REQUEST_NOTIFICATIONS = 1004;
+    private static final int REMINDER_FLOW_NONE = 0;
+    private static final int REMINDER_FLOW_FIRST_USE = 1;
+    private static final long CHANNEL_HINT_DELAY_MS = 1300L;
+    private static final long REMINDER_ALERT_SLIDE_MS = 220L;
+    /** 清理后残留不超过该值即视为清理成功（VACUUM 后 sqlite 仍占少量页）。 */
+    private static final long MAP_CACHE_SMALL_REMAINDER_BYTES = 2L * 1024L * 1024L;
+    private static final int REMINDER_FLOW_SCHEDULE = 2;
+    private static final int QR_HISTORY_LIMIT = 5;
     private static final long MARKER_TAP_GUARD_MS = 700L;
     private static final long MAP_CENTER_REFRESH_DELAY_MS = 700L;
-    private static final long QR_AUTO_DELETE_MS = 30_000L;
+    private static final long RECENTER_ANIMATION_MS = 700L;
+    private static final double CENTER_INDICATOR_DISTANCE_METERS = 25.0;
     /**
      * The 512-pixel tile source doubles the pixel scale of a classic 256-pixel
      * source, so 16.0 keeps roughly the same view span as the old 17.0 setting.
      */
     private static final double DEFAULT_ZOOM = 16.0;
+    private static final double RECENTER_ZOOM = 17.0;
+    private static final float MAP_TILE_SATURATION = 0.58f;
 
     private static final String PREF_DISCLAIMER_ACCEPTED = "disclaimer_accepted";
     private static final String PREF_USAGE_NOTICE_SHOWN = "usage_notice_shown";
     private static final String PREF_QR_SHOW_URL = "qr_show_url";
     private static final String PREF_QR_COPY_ENABLED = "qr_copy_enabled";
     private static final String PREF_ADVANCED_ENABLED = "advanced_enabled";
-    private static final String PREF_PENDING_QR_DELETES = "pending_qr_deletes";
+    private static final String PREF_VEHICLE_ALERT_ENABLED = "vehicle_alert_enabled";
+    private static final String PREF_VEHICLE_ALERT_INTERVAL = "vehicle_alert_interval_seconds";
+    private static final String PREF_VEHICLE_ALERT_AUTOSTART_PROMPTED = "vehicle_alert_autostart_prompted";
+    private static final String PREF_QR_HISTORY = "qr_history";
+    private static final String PREF_KEEP_QR_HISTORY = "keep_qr_history";
+    private static final String PREF_NUMBER_SITE_ID = "number_site_id";
+    private static final String PREF_NUMBER_SERIES = "number_series";
+    private static final String PREF_REMINDER_LEAD_MINUTES = "reminder_lead_minutes";
+    private static final String PREF_REMINDER_ALERT_MODE = "reminder_alert_mode";
+    private static final String PREF_REMINDER_SETUP_PROMPTED = "reminder_setup_prompted";
+    private static final String PREF_REMINDER_RISK_MUTED = "reminder_risk_muted";
+    private static final String PREF_REMINDER_CHANNEL_GUIDE_SHOWN =
+            "reminder_channel_guide_shown_v1";
+    private static final String PREF_REMINDER_PENDING_FLOW = "reminder_pending_flow";
+    private static final String PREF_REMINDER_PENDING_STEP = "reminder_pending_step";
+    private static final String PREF_REMINDER_OEM_GUIDE_SHOWN = "reminder_oem_guide_shown_v3";
 
     /**
      * Neutral public-city center used only before a location fix is available.
@@ -107,6 +138,8 @@ public final class MainActivity extends BaseActivity implements LocationListener
             39.9042,
             116.4074
     );
+    /** 说明类文本里用于标记分组标题的前缀（渲染时去掉）。 */
+    private static final String GROUP_HEADING_MARKER = "## ";
     private static final long MIN_REFRESH_INTERVAL_MS = 10_000L;
     private static final double MIN_REFRESH_DISTANCE_METERS = 80.0;
 
@@ -115,59 +148,79 @@ public final class MainActivity extends BaseActivity implements LocationListener
      * tiles. The tiles are drawn one-to-one with screen pixels so the high
      * resolution source is not upscaled and blurred on high-DPI phones.
      */
-    private static final OnlineTileSourceBase MAP_TILE_SOURCE = new OnlineTileSourceBase(
-            "AutoNaviRoadHD",
-            4,
-            18,
-            512,
-            ".png",
-            new String[]{
-                    "https://wprd01.is.autonavi.com/",
-                    "https://wprd02.is.autonavi.com/",
-                    "https://wprd03.is.autonavi.com/",
-                    "https://wprd04.is.autonavi.com/"
-            },
-            "高德地图"
-    ) {
-        @Override
-        public String getTileURLString(long mapTileIndex) {
-            return getBaseUrl()
-                    + "appmaptile?x="
-                    + MapTileIndex.getX(mapTileIndex)
-                    + "&y=" + MapTileIndex.getY(mapTileIndex)
-                    + "&z=" + MapTileIndex.getZoom(mapTileIndex)
-                    + "&lang=zh_cn&size=1&scl=2&style=8";
-        }
-    };
+    private OnlineTileSourceBase createMapTileSource() {
+        return new OnlineTileSourceBase(
+                "AutoNaviRoadHD",
+                4,
+                18,
+                512,
+                ".png",
+                new String[]{
+                        "https://wprd01.is.autonavi.com/",
+                        "https://wprd02.is.autonavi.com/",
+                        "https://wprd03.is.autonavi.com/",
+                        "https://wprd04.is.autonavi.com/"
+                },
+                getString(R.string.map_tile_copyright)
+        ) {
+            @Override
+            public String getTileURLString(long mapTileIndex) {
+                return getBaseUrl()
+                        + "appmaptile?x="
+                        + MapTileIndex.getX(mapTileIndex)
+                        + "&y=" + MapTileIndex.getY(mapTileIndex)
+                        + "&z=" + MapTileIndex.getZoom(mapTileIndex)
+                        + "&lang=zh_cn&size=1&scl=2&style=8";
+            }
+        };
+    }
 
-    private final BikeRepository repository = new BikeRepository();
+    private BikeRepository repository;
+    private QrGalleryStore qrGalleryStore;
+    private VehicleNumberCatalog vehicleNumberCatalog;
+    private SharedPreferences appPreferences;
     private final List<Bike> bikes = new ArrayList<>();
-    private final Map<Long, Marker> bikeMarkers = new HashMap<>();
+    private final Map<String, Marker> bikeMarkers = new HashMap<>();
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private final Runnable refreshFromMapCenterRunnable = this::refreshFromMapCenter;
 
     private AppMapView mapView;
     private TextView tvStatus;
+    private TextView tvDataLabel;
     private TextView tvBikeNumber;
     private TextView tvBikeMeta;
+    private TextView tvBikeFreshness;
     private TextView tvManualNotice;
     private TextView tvSettingsVersion;
     private LinearLayout bikePanel;
     private View settingsPanel;
     private Button btnShowQr;
     private ImageButton btnRefresh;
+    private ImageButton btnReminder;
     private LinearLayout rowAdvanced;
     private CheckBox checkAdvanced;
     private CheckBox checkThemeSystem;
     private CheckBox checkThemeLight;
     private CheckBox checkThemeDark;
     private LinearLayout advancedContainer;
+    private View advancedSection;
+    private ImageView ivAdvancedOptionsArrow;
+    private boolean advancedOptionsExpanded;
     private Switch switchQrUrl;
     private Switch switchQrCopy;
+    private Switch switchVehicleAlert;
+    private Switch switchKeepHistory;
+    private TextView tvMapCacheSize;
+    private ImageView mapCenterIndicator;
+    private final SimpleDateFormat refreshTimeFormat =
+            new SimpleDateFormat("HH:mm:ss", Locale.CHINA);
+    private final SimpleDateFormat uploadTimeFormat =
+            new SimpleDateFormat("MM-dd HH:mm", Locale.CHINA);
 
     private LocationManager locationManager;
     private Location currentLocation;
     private BikeCallout bikeCallout;
+    private UserLocationCallout userLocationCallout;
     private MapLabelOverlay mapLabelOverlay;
     private Marker userMarker;
     private GeoPoint lastRequestedCenter;
@@ -176,13 +229,37 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private long lastFetchAtMs;
     private long lastMarkerTapAt;
     private int systemBarsBottom;
-    private long pendingQrNumber = -1;
+    private String pendingQrNumber = "";
     private Bitmap pendingQrBitmap;
     private boolean pendingOpenWeChatAfterQrSave;
     private boolean requestInFlight;
     private boolean pendingRequestForce;
     private boolean permissionDialogShowing;
     private boolean initialLocationCentered;
+    private boolean recenterInProgress;
+    private CountDownTimer reminderDialogTimer;
+    private int pendingReminderLeadMinutes = ReminderScheduler.DEFAULT_LEAD_MINUTES;
+    private String pendingReminderAlertMode = ReminderScheduler.MODE_SOUND_VIBRATE;
+    private long pendingReminderStartAt;
+    private long pendingReminderEndAt;
+    private boolean awaitingExactAlarmPermission;
+    private boolean awaitingBatteryOptimizationPermission;
+    private boolean awaitingReminderChannelPermission;
+    private final java.util.Map<Integer, Integer> chipLastChecked = new java.util.HashMap<>();
+    private boolean backgroundSettingsDialogShowing;
+    private boolean vehicleAlertNotificationDialogShowing;
+    private int reminderFlow = REMINDER_FLOW_NONE;
+    private View reminderAlertOverlay;
+
+    /**
+     * 当前处于前台的 MainActivity。提醒小方块只在应用前台时显示，
+     * 后台只保留系统通知，不再从后台拉起任何界面。
+     */
+    private static MainActivity foregroundInstance;
+
+    static MainActivity foregroundInstance() {
+        return foregroundInstance;
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -197,12 +274,24 @@ public final class MainActivity extends BaseActivity implements LocationListener
 
         setContentView(R.layout.activity_main);
         locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
+        repository = new BikeRepository(this);
+        qrGalleryStore = new QrGalleryStore(getApplicationContext(), PREFS_APP);
+        appPreferences = getSharedPreferences(PREFS_APP, MODE_PRIVATE);
+        try {
+            vehicleNumberCatalog = VehicleNumberCatalog.load(this);
+        } catch (Exception exception) {
+            throw new IllegalStateException("Unable to load vehicle number catalog", exception);
+        }
 
+        // 上次在系统设置页里没走完的提醒权限流程，重建后继续。
+        restoreReminderFlowStep();
         bindViews();
         applySystemBarInsets();
         configureMap();
         setupClickListeners();
         setupSettings();
+        updateReminderButtonState();
+        applyVehicleAlertState();
         cleanupExpiredQrSaves();
         showStartupFlow();
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
@@ -224,8 +313,10 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private void bindViews() {
         mapView = findViewById(R.id.map);
         tvStatus = findViewById(R.id.tvStatus);
+        tvDataLabel = findViewById(R.id.tvDataLabel);
         tvBikeNumber = findViewById(R.id.tvBikeNumber);
         tvBikeMeta = findViewById(R.id.tvBikeMeta);
+        tvBikeFreshness = findViewById(R.id.tvBikeFreshness);
         tvManualNotice = findViewById(R.id.tvManualNotice);
         bikePanel = findViewById(R.id.bikePanel);
         settingsPanel = findViewById(R.id.settingsPanel);
@@ -236,10 +327,16 @@ public final class MainActivity extends BaseActivity implements LocationListener
         checkThemeDark = findViewById(R.id.checkThemeDark);
         rowAdvanced = findViewById(R.id.rowAdvanced);
         advancedContainer = findViewById(R.id.advancedContainer);
+        advancedSection = findViewById(R.id.advancedSection);
+        ivAdvancedOptionsArrow = findViewById(R.id.ivAdvancedOptionsArrow);
         switchQrUrl = findViewById(R.id.switchQrUrl);
         switchQrCopy = findViewById(R.id.switchQrCopy);
+        switchVehicleAlert = findViewById(R.id.switchVehicleAlert);
+        switchKeepHistory = findViewById(R.id.switchKeepHistory);
+        mapCenterIndicator = findViewById(R.id.mapCenterIndicator);
         btnShowQr = findViewById(R.id.btnShowQr);
         btnRefresh = findViewById(R.id.btnRefresh);
+        btnReminder = findViewById(R.id.btnReminder);
     }
 
     private void applySystemBarInsets() {
@@ -282,7 +379,8 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     private void configureMap() {
-        mapView.setTileSource(MAP_TILE_SOURCE);
+        mapView.setTileSource(createMapTileSource());
+        mapView.getMapOverlay().setColorFilter(createMapColorFilter());
         mapView.setTilesScaledToDpi(false);
         mapView.setMultiTouchControls(true);
         mapView.setBuiltInZoomControls(false);
@@ -323,6 +421,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
             @Override
             public boolean onScroll(ScrollEvent event) {
                 updateViewportStatus();
+                updateMapCenterIndicator();
                 scheduleMapCenterRefresh();
                 return false;
             }
@@ -331,10 +430,17 @@ public final class MainActivity extends BaseActivity implements LocationListener
             public boolean onZoom(ZoomEvent event) {
                 updateViewportStatus();
                 updateMapLabels();
+                updateMapCenterIndicator();
                 scheduleMapCenterRefresh();
                 return false;
             }
         });
+    }
+
+    private ColorMatrixColorFilter createMapColorFilter() {
+        ColorMatrix matrix = new ColorMatrix();
+        matrix.setSaturation(MAP_TILE_SATURATION);
+        return new ColorMatrixColorFilter(matrix);
     }
 
     private void setupClickListeners() {
@@ -356,11 +462,22 @@ public final class MainActivity extends BaseActivity implements LocationListener
                     currentLocation.getLatitude(),
                     currentLocation.getLongitude()
             );
-            mapView.getController().animateTo(displayPoint);
+            recenterInProgress = true;
+            mapCenterIndicator.setVisibility(View.GONE);
+            mapView.getController().animateTo(
+                    displayPoint,
+                    RECENTER_ZOOM,
+                    RECENTER_ANIMATION_MS
+            );
             loadBikes(displayPoint, true);
+            mapView.postDelayed(() -> {
+                recenterInProgress = false;
+                updateMapCenterIndicator();
+            }, RECENTER_ANIMATION_MS);
         });
 
         findViewById(R.id.btnList).setOnClickListener(view -> showBikeList());
+        btnReminder.setOnClickListener(view -> showReminderEntry());
         findViewById(R.id.btnRefresh).setOnClickListener(view -> {
             GeoPoint center = mapCenterGcj02();
             loadBikes(center, true);
@@ -388,9 +505,14 @@ public final class MainActivity extends BaseActivity implements LocationListener
                 getString(R.string.credits_content)
         ));
         findViewById(R.id.rowPrivacy).setOnClickListener(view -> showPrivacyDialog());
+        tvMapCacheSize = findViewById(R.id.tvMapCacheSize);
+        findViewById(R.id.rowClearMapCache).setOnClickListener(
+                view -> showClearMapCacheDialog()
+        );
+        updateMapCacheSizeLabel();
 
-        tvSettingsVersion.setText(getString(R.string.version_format, versionName()));
-        String theme = getSharedPreferences(PREFS_APP, MODE_PRIVATE)
+        tvSettingsVersion.setText(versionNumberLabel());
+        String theme = appPreferences
                 .getString(PREF_THEME, THEME_SYSTEM);
         showSelectedTheme(theme);
         findViewById(R.id.rowThemeSystem).setOnClickListener(view ->
@@ -403,7 +525,16 @@ public final class MainActivity extends BaseActivity implements LocationListener
                 selectTheme(THEME_DARK)
         );
 
-        SharedPreferences preferences = getSharedPreferences(PREFS_APP, MODE_PRIVATE);
+        SharedPreferences preferences = appPreferences;
+        switchKeepHistory.setChecked(
+                preferences.getBoolean(PREF_KEEP_QR_HISTORY, true)
+        );
+        switchKeepHistory.setOnCheckedChangeListener((button, checked) -> {
+            preferences.edit().putBoolean(PREF_KEEP_QR_HISTORY, checked).apply();
+            if (!checked) {
+                clearQrHistory();
+            }
+        });
         switchQrUrl.setChecked(preferences.getBoolean(PREF_QR_SHOW_URL, false));
         switchQrCopy.setChecked(preferences.getBoolean(PREF_QR_COPY_ENABLED, false));
         switchQrUrl.setOnCheckedChangeListener((button, checked) ->
@@ -413,14 +544,203 @@ public final class MainActivity extends BaseActivity implements LocationListener
                 preferences.edit().putBoolean(PREF_QR_COPY_ENABLED, checked).apply()
         );
 
+        boolean vehicleAlertEnabled =
+                preferences.getBoolean(PREF_VEHICLE_ALERT_ENABLED, false);
+        switchVehicleAlert.setChecked(vehicleAlertEnabled);
+        switchVehicleAlert.setOnCheckedChangeListener((button, checked) -> {
+            preferences.edit()
+                    .putBoolean(PREF_VEHICLE_ALERT_ENABLED, checked)
+                    .apply();
+            if (checked) {
+                VehicleAlertService.ensureChannels(this);
+            }
+            applyVehicleAlertState();
+            if (checked && !preferences.getBoolean(PREF_VEHICLE_ALERT_AUTOSTART_PROMPTED, false)) {
+                preferences.edit()
+                        .putBoolean(PREF_VEHICLE_ALERT_AUTOSTART_PROMPTED, true)
+                        .apply();
+                showVehicleAlertAutostartDialog();
+            }
+        });
+
         boolean advancedEnabled = preferences.getBoolean(PREF_ADVANCED_ENABLED, false);
         checkAdvanced.setChecked(advancedEnabled);
-        advancedContainer.setVisibility(advancedEnabled ? View.VISIBLE : View.GONE);
+        advancedSection.setVisibility(advancedEnabled ? View.VISIBLE : View.GONE);
+        // 开启高级设置后默认收起子选项，点「高级选项」再展开。
+        setAdvancedOptionsExpanded(false);
+        if (!advancedEnabled) {
+            switchQrUrl.setChecked(false);
+            switchQrCopy.setChecked(false);
+            // 车辆预警属于高级选项：高级设置已关闭时不允许它在后台继续运行。
+            switchVehicleAlert.setChecked(false);
+        }
         checkAdvanced.setOnCheckedChangeListener((button, checked) -> {
-            advancedContainer.setVisibility(checked ? View.VISIBLE : View.GONE);
-            preferences.edit().putBoolean(PREF_ADVANCED_ENABLED, checked).apply();
+            advancedSection.setVisibility(checked ? View.VISIBLE : View.GONE);
+            setAdvancedOptionsExpanded(false);
+            if (!checked) {
+                switchQrUrl.setChecked(false);
+                switchQrCopy.setChecked(false);
+                // 关闭高级设置时一并关闭车辆预警，避免开关被隐藏后功能仍在后台运行。
+                switchVehicleAlert.setChecked(false);
+            }
+            preferences.edit()
+                    .putBoolean(PREF_ADVANCED_ENABLED, checked)
+                    .putBoolean(PREF_QR_SHOW_URL, checkAdvanced.isChecked()
+                            && switchQrUrl.isChecked())
+                    .putBoolean(PREF_QR_COPY_ENABLED, checkAdvanced.isChecked()
+                            && switchQrCopy.isChecked())
+                    .apply();
         });
         rowAdvanced.setOnClickListener(view -> checkAdvanced.toggle());
+        findViewById(R.id.rowAdvancedOptions).setOnClickListener(
+                view -> setAdvancedOptionsExpanded(!advancedOptionsExpanded)
+        );
+    }
+
+    /** 展开/收起高级设置的子选项，并按状态旋转右侧箭头。 */
+    private void setAdvancedOptionsExpanded(boolean expanded) {
+        advancedOptionsExpanded = expanded;
+        if (advancedContainer != null) {
+            advancedContainer.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        }
+        if (ivAdvancedOptionsArrow != null) {
+            ivAdvancedOptionsArrow.animate()
+                    .rotation(expanded ? 90f : 0f)
+                    .setDuration(150L)
+                    .start();
+        }
+    }
+
+    /**
+     * 车辆预警要跑起来需要两件事同时成立：高级设置里的功能开关打开，
+     * 且提醒页里的计时开着。两者互不影响各自的开关状态。
+     */
+    private void applyVehicleAlertState() {
+        boolean enabled = appPreferences.getBoolean(PREF_VEHICLE_ALERT_ENABLED, false);
+        if (!enabled || !VehicleAlertService.isTimerRunning(this)) {
+            VehicleAlertService.stop(this);
+            return;
+        }
+        if (!appPreferences.getBoolean(PREF_DISCLAIMER_ACCEPTED, false)
+                || !appPreferences.getBoolean(PREF_USAGE_NOTICE_SHOWN, false)) {
+            VehicleAlertService.stop(this);
+            return;
+        }
+        if (!hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)) {
+            Toast.makeText(this, R.string.permission_location, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (!VehicleAlertService.hasNotificationAccess(this)) {
+            VehicleAlertService.stop(this);
+            showVehicleAlertNotificationDialog();
+            return;
+        }
+        try {
+            VehicleAlertService.start(this);
+        } catch (RuntimeException exception) {
+            Toast.makeText(this, R.string.vehicle_alert_start_failed, Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void showVehicleAlertAutostartDialog() {
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.vehicle_alert_autostart_title)
+                .setMessage(R.string.vehicle_alert_autostart_message)
+                .setCancelable(false)
+                .setPositiveButton(
+                        R.string.vehicle_alert_autostart_open,
+                        (ignored, which) -> openVehicleAlertAutostartSettings()
+                )
+                .setNegativeButton(R.string.vehicle_alert_autostart_later, null)
+                .create();
+        dialog.show();
+    }
+
+    private void showVehicleAlertNotificationDialog() {
+        if (vehicleAlertNotificationDialogShowing) {
+            return;
+        }
+        vehicleAlertNotificationDialogShowing = true;
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.vehicle_alert_notification_title)
+                .setMessage(R.string.vehicle_alert_notification_message)
+                .setCancelable(false)
+                .setPositiveButton(
+                        R.string.vehicle_alert_notification_open,
+                        (ignored, which) -> openAppNotificationSettings()
+                )
+                .setNegativeButton(R.string.permission_not_now, null)
+                .create();
+        dialog.setOnDismissListener(ignored -> vehicleAlertNotificationDialogShowing = false);
+        dialog.show();
+    }
+
+    private void openVehicleAlertAutostartSettings() {
+        // 受系统限制，第三方应用无法直接打开厂商的自启动页面；
+        // 这里打开系统设置首页，由用户按提示手动进入「应用 → 自启动」。
+        try {
+            startActivity(new Intent(Settings.ACTION_SETTINGS)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            return;
+        } catch (RuntimeException ignored) {
+            // Fall through to the app details page.
+        }
+        try {
+            startActivity(new Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + getPackageName())
+            ));
+        } catch (Exception ignored) {
+            // Nothing else we can open.
+        }
+    }
+    private void selectAlertInterval(RadioGroup group, int seconds) {
+        int id = R.id.rbAlertInterval60;
+        if (seconds == 10) {
+            id = R.id.rbAlertInterval10;
+        } else if (seconds == 30) {
+            id = R.id.rbAlertInterval30;
+        } else if (seconds == 300) {
+            id = R.id.rbAlertInterval300;
+        } else if (seconds == 180) {
+            id = R.id.rbAlertInterval180;
+        }
+        group.check(id);
+    }
+
+    private int alertIntervalFromId(int checkedId) {
+        if (checkedId == -1) {
+            return 0;
+        }
+        if (checkedId == R.id.rbAlertInterval10) {
+            return 10;
+        }
+        if (checkedId == R.id.rbAlertInterval30) {
+            return 30;
+        }
+        if (checkedId == R.id.rbAlertInterval300) {
+            return 300;
+        }
+        if (checkedId == R.id.rbAlertInterval180) {
+            return 180;
+        }
+        return 60;
+    }
+
+    private void bindVehicleAlertInterval(View content) {
+        TextView title = content.findViewById(R.id.tvVehicleAlertIntervalTitle);
+        RadioGroup group = content.findViewById(R.id.rgVehicleAlertInterval);
+        boolean enabled = appPreferences.getBoolean(PREF_VEHICLE_ALERT_ENABLED, false);
+        title.setVisibility(enabled ? View.VISIBLE : View.GONE);
+        group.setVisibility(enabled ? View.VISIBLE : View.GONE);
+        // 这一行只是计时开关：有选中 = 计时开着，没选中 = 计时关着。
+        // 功能开关始终只由高级设置决定，这里不会去改它。
+        int saved = appPreferences.getInt(PREF_VEHICLE_ALERT_INTERVAL, 0);
+        if (saved <= 0) {
+            group.clearCheck();
+            return;
+        }
+        selectAlertInterval(group, saved);
     }
 
     private void showSelectedTheme(String theme) {
@@ -430,7 +750,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     private void selectTheme(String newTheme) {
-        SharedPreferences preferences = getSharedPreferences(PREFS_APP, MODE_PRIVATE);
+        SharedPreferences preferences = appPreferences;
         showSelectedTheme(newTheme);
         if (!newTheme.equals(preferences.getString(PREF_THEME, THEME_SYSTEM))) {
             preferences.edit().putString(PREF_THEME, newTheme).apply();
@@ -438,16 +758,8 @@ public final class MainActivity extends BaseActivity implements LocationListener
         }
     }
 
-    private String versionName() {
-        try {
-            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
-        } catch (PackageManager.NameNotFoundException exception) {
-            return "1.0.1";
-        }
-    }
-
     private void showStartupFlow() {
-        SharedPreferences preferences = getSharedPreferences(PREFS_APP, MODE_PRIVATE);
+        SharedPreferences preferences = appPreferences;
         if (!preferences.getBoolean(PREF_DISCLAIMER_ACCEPTED, false)) {
             showDisclaimerDialog(true);
             return;
@@ -466,7 +778,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
                 .setView(content)
                 .setCancelable(false)
                 .setPositiveButton(R.string.disclaimer_agree, (ignored, which) -> {
-                    getSharedPreferences(PREFS_APP, MODE_PRIVATE)
+                    appPreferences
                             .edit()
                             .putBoolean(PREF_DISCLAIMER_ACCEPTED, true)
                             .apply();
@@ -483,15 +795,16 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     private void showFirstUseNoticeIfNeeded() {
-        SharedPreferences preferences = getSharedPreferences(PREFS_APP, MODE_PRIVATE);
+        SharedPreferences preferences = appPreferences;
         if (preferences.getBoolean(PREF_USAGE_NOTICE_SHOWN, false)) {
             startInitialPermissionFlow();
             return;
         }
 
+        View content = createInfoContent(getString(R.string.usage_notice_message));
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(R.string.usage_notice_title)
-                .setMessage(R.string.usage_notice_message)
+                .setView(content)
                 .setCancelable(false)
                 .setPositiveButton(R.string.usage_notice_confirm, (ignored, which) -> {
                     preferences.edit()
@@ -501,6 +814,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
                 })
                 .create();
         dialog.show();
+        applyInfoDialogSize(dialog, content);
     }
 
     private void startInitialPermissionFlow() {
@@ -512,6 +826,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     private void showSettings() {
+        updateMapCacheSizeLabel();
         settingsPanel.setVisibility(View.VISIBLE);
     }
 
@@ -519,23 +834,171 @@ public final class MainActivity extends BaseActivity implements LocationListener
         settingsPanel.setVisibility(View.GONE);
     }
 
+    /** 地图瓦片缓存（osmdroid）当前占用，字节。 */
+    private long mapCacheSizeBytes() {
+        return directorySizeBytes(osmdroidTileCacheDir());
+    }
+
+    private java.io.File osmdroidTileCacheDir() {
+        try {
+            return org.osmdroid.config.Configuration.getInstance()
+                    .getOsmdroidTileCache(getApplicationContext());
+        } catch (RuntimeException exception) {
+            return null;
+        }
+    }
+
+    private static long directorySizeBytes(java.io.File dir) {
+        if (dir == null || !dir.exists()) {
+            return 0L;
+        }
+        java.io.File[] children = dir.listFiles();
+        if (children == null) {
+            return 0L;
+        }
+        long total = 0L;
+        for (java.io.File child : children) {
+            total += child.isDirectory()
+                    ? directorySizeBytes(child)
+                    : Math.max(0L, child.length());
+        }
+        return total;
+    }
+
+    private void updateMapCacheSizeLabel() {
+        if (tvMapCacheSize == null) {
+            return;
+        }
+        long bytes = mapCacheSizeBytes();
+        tvMapCacheSize.setText(bytes <= 0L
+                ? getString(R.string.map_cache_empty)
+                : formatByteSize(bytes));
+    }
+
+    private static String formatByteSize(long bytes) {
+        if (bytes >= 1024L * 1024L) {
+            return String.format(Locale.CHINA, "%.1f MB", bytes / 1024f / 1024f);
+        }
+        if (bytes >= 1024L) {
+            return String.format(Locale.CHINA, "%.0f KB", bytes / 1024f);
+        }
+        return bytes + " B";
+    }
+
+    private void showClearMapCacheDialog() {
+        long bytes = mapCacheSizeBytes();
+        if (bytes <= 0L) {
+            Toast.makeText(this, R.string.map_cache_empty, Toast.LENGTH_SHORT).show();
+            updateMapCacheSizeLabel();
+            return;
+        }
+        View content = LayoutInflater.from(this).inflate(R.layout.dialog_map_cache, null);
+        TextView message = content.findViewById(R.id.tvMapCacheMessage);
+        message.setText(getString(
+                R.string.map_cache_clear_message,
+                formatByteSize(bytes)
+        ));
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.map_cache_clear_title)
+                .setView(content)
+                .setPositiveButton(
+                        R.string.confirm,
+                        (ignored, which) -> clearMapCache(bytes)
+                )
+                .setNegativeButton(R.string.cancel, null)
+                .create();
+        dialog.show();
+        applyWideDialogSize(dialog);
+    }
+
+    /**
+     * 清除地图瓦片缓存。osmdroid 的 purgeCache() 只删除表内数据、不归还磁盘空间，
+     * 因此随后对缓存库执行 VACUUM。两步都放在后台线程，避免大缓存卡住界面。
+     */
+    private void clearMapCache(long beforeBytes) {
+        new Thread(() -> {
+            boolean purged = false;
+            try {
+                org.osmdroid.tileprovider.modules.IFilesystemCache writer =
+                        mapView.getTileProvider().getTileWriter();
+                if (writer instanceof org.osmdroid.tileprovider.modules.SqlTileWriter) {
+                    purged = ((org.osmdroid.tileprovider.modules.SqlTileWriter) writer)
+                            .purgeCache();
+                }
+            } catch (RuntimeException ignored) {
+                // 按清理后的实际占用判断结果。
+            }
+            boolean vacuumed = vacuumMapCacheDatabase();
+            // 在后台线程紧接 VACUUM 后测量，避免把随后新下载的瓦片算进本次结果。
+            long afterBytes = mapCacheSizeBytes();
+            boolean purgedResult = purged;
+            runOnUiThread(() -> {
+                mapView.getTileProvider().clearTileCache();
+                mapView.invalidate();
+                updateMapCacheSizeLabel();
+                boolean cleared = purgedResult
+                        && (afterBytes <= MAP_CACHE_SMALL_REMAINDER_BYTES
+                        || afterBytes <= beforeBytes / 4L);
+                long released = Math.max(0L, beforeBytes - afterBytes);
+                Toast.makeText(
+                        this,
+                        cleared
+                                ? getString(
+                                        R.string.map_cache_cleared,
+                                        formatByteSize(released)
+                                )
+                                : getString(R.string.map_cache_clear_failed),
+                        Toast.LENGTH_LONG
+                ).show();
+            });
+        }, "clear-map-cache").start();
+    }
+
+    /** VACUUM 回收 sqlite 空间；数据库被占用时短暂重试。 */
+    private boolean vacuumMapCacheDatabase() {
+        java.io.File dir = osmdroidTileCacheDir();
+        if (dir == null) {
+            return false;
+        }
+        java.io.File database = new java.io.File(dir, "cache.db");
+        if (!database.isFile()) {
+            return false;
+        }
+        for (int attempt = 0; attempt < 3; attempt++) {
+            try (android.database.sqlite.SQLiteDatabase handle =
+                         android.database.sqlite.SQLiteDatabase.openDatabase(
+                                 database.getAbsolutePath(),
+                                 null,
+                                 android.database.sqlite.SQLiteDatabase.OPEN_READWRITE
+                         )) {
+                handle.execSQL("VACUUM");
+                return true;
+            } catch (RuntimeException exception) {
+                try {
+                    Thread.sleep(200L);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+        }
+        return false;
+    }
+
     private void showPrivacyDialog() {
         View content = createInfoContent(getString(R.string.privacy_content));
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(R.string.settings_privacy)
                 .setView(content)
-                .setCancelable(false)
-                .setPositiveButton(R.string.disclaimer_agree, null)
-                .setNegativeButton(R.string.disclaimer_exit, (ignored, which) ->
-                        exitApplication()
-                )
+                .setCancelable(true)
+                .setPositiveButton(R.string.close, null)
                 .create();
         dialog.show();
         applyInfoDialogSize(dialog, content);
     }
 
     private void showInfoDialog(String title, String message) {
-        View content = createInfoContent(message);
+        View content = createInfoContent(message, true);
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(title)
                 .setView(content)
@@ -546,45 +1009,103 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     private View createInfoContent(String message) {
+        return createInfoContent(message, false);
+    }
+
+    private View createInfoContent(String message, boolean strongHeadings) {
         View content = LayoutInflater.from(this).inflate(R.layout.dialog_info, null);
         LinearLayout sections = content.findViewById(R.id.infoSections);
 
-        String[] blocks = message.split("\\n\\n");
+        String[] blocks = message.split("\n\n");
         for (String block : blocks) {
-            String[] lines = block.split("\\n", 2);
-            String headingText = lines[0].trim();
-            if (headingText.isEmpty()) {
+            String value = block.trim();
+            if (value.isEmpty()) {
                 continue;
             }
+            boolean firstBlock = sections.getChildCount() == 0;
+            String[] lines = value.split("\n", 2);
+            String headingText = null;
+            String bodyText;
 
-            TextView heading = textView(
-                    headingText,
-                    15,
-                    R.color.text_primary,
-                    true
-            );
-            if (sections.getChildCount() > 0) {
-                heading.setPadding(0, dp(14), 0, 0);
+            if (lines.length == 2 && isSectionHeading(lines[0].trim())) {
+                headingText = lines[0].trim();
+                bodyText = lines[1].trim();
+            } else if (lines.length == 1 && isSectionHeading(value)) {
+                headingText = value;
+                bodyText = "";
+            } else {
+                bodyText = value;
             }
-            sections.addView(heading);
 
-            if (lines.length < 2 || lines[1].trim().isEmpty()) {
+            // 许可鸣谢等文本用 "## " 前缀标记分组标题，渲染时去掉前缀，
+            // 这样分组样式不再依赖 Java 里写死的标题文字。
+            boolean groupHeading = false;
+            if (headingText != null && headingText.startsWith(GROUP_HEADING_MARKER)) {
+                groupHeading = true;
+                headingText = headingText.substring(GROUP_HEADING_MARKER.length()).trim();
+            }
+
+            if (headingText != null) {
+                TextView heading = textView(
+                        headingText,
+                        strongHeadings ? 16 : 15,
+                        R.color.text_primary,
+                        true
+                );
+                if (strongHeadings) {
+                    heading.setTextSize(groupHeading ? 20 : 15);
+                    heading.setTypeface(
+                            android.graphics.Typeface.create(
+                                    groupHeading ? "sans-serif-black" : "sans-serif-medium",
+                                    android.graphics.Typeface.NORMAL
+                            )
+                    );
+                    if (groupHeading) {
+                        heading.setTextColor(getColor(R.color.settings_control_accent));
+                        heading.setLetterSpacing(0.03f);
+                    }
+                    if (!firstBlock) {
+                        heading.setPadding(
+                                0,
+                                dp(groupHeading ? 32 : 16),
+                                0,
+                                dp(groupHeading ? 2 : 0)
+                        );
+                    }
+                } else if (!firstBlock) {
+                    heading.setPadding(0, dp(14), 0, 0);
+                }
+                sections.addView(heading);
+            }
+
+            if (bodyText.isEmpty()) {
                 continue;
             }
             TextView body = textView(
-                    lines[1].trim(),
+                    bodyText,
                     14,
                     R.color.text_secondary,
-                    false
+                    firstBlock && headingText == null
             );
             Linkify.addLinks(body, Linkify.WEB_URLS);
             body.setMovementMethod(LinkMovementMethod.getInstance());
-            body.setLinkTextColor(getColor(R.color.brand_green));
+            body.setLinkTextColor(getColor(R.color.control_accent_text));
             body.setLineSpacing(dp(3), 1.0f);
             body.setPadding(0, dp(4), 0, 0);
             sections.addView(body);
         }
         return content;
+    }
+
+
+    private boolean isSectionHeading(String value) {
+        if (value.isEmpty()) {
+            return false;
+        }
+        return !value.endsWith("。")
+                && !value.endsWith("！")
+                && !value.endsWith("？")
+                && !value.endsWith("；");
     }
 
     private void applyInfoDialogSize(AlertDialog dialog, View content) {
@@ -615,6 +1136,992 @@ public final class MainActivity extends BaseActivity implements LocationListener
                     WindowManager.LayoutParams.WRAP_CONTENT
             );
         }
+    }
+
+    private void showReminderEntry() {
+        SharedPreferences preferences = appPreferences;
+        if (!preferences.getBoolean(PREF_REMINDER_SETUP_PROMPTED, false)
+                || !hasRequiredReminderPermissions()) {
+            beginReminderFirstUseFlow();
+            return;
+        }
+        // The risk notice keeps appearing on every entry until the user ticks
+        // "do not show again"; the reminder dialog opens once it is accepted.
+        showReminderRiskNotice(
+                this::showReminderDialog,
+                this::resetReminderSetupState
+        );
+    }
+
+    @SuppressLint("InlinedApi")
+    private boolean hasRequiredReminderPermissions() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && !hasPermission(Manifest.permission.POST_NOTIFICATIONS)) {
+            return false;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                && !ReminderScheduler.canScheduleExactAlarms(this)) {
+            return false;
+        }
+        if (!NotificationManagerCompat.from(this).areNotificationsEnabled()) {
+            return false;
+        }
+        String alertMode = appPreferences.getString(
+                PREF_REMINDER_ALERT_MODE,
+                ReminderScheduler.MODE_SOUND_VIBRATE
+        );
+        if (ReminderScheduler.isAlertChannelWeakened(this, alertMode)) {
+            return false;
+        }
+        // 厂商的“允许后台活动/自启动”无法可靠读取，按一次性引导状态补走流程；
+        // 标准电池优化则可以实际检查。
+        return isIgnoringBatteryOptimizations()
+                && appPreferences.getBoolean(PREF_REMINDER_OEM_GUIDE_SHOWN, false);
+    }
+
+    private void beginReminderFirstUseFlow() {
+        reminderFlow = REMINDER_FLOW_FIRST_USE;
+        showReminderRiskNotice(
+                this::showReminderPermissionDialog,
+                this::resetReminderSetupState
+        );
+    }
+
+    private void showReminderPermissionDialog() {
+        if (permissionDialogShowing) {
+            return;
+        }
+        permissionDialogShowing = true;
+        View content = LayoutInflater.from(this).inflate(
+                R.layout.dialog_reminder_permission,
+                null
+        );
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.reminder_permission_title)
+                .setView(content)
+                .setCancelable(false)
+                .setPositiveButton(R.string.permission_continue, (ignored, which) -> {
+                    appPreferences
+                            .edit()
+                            .putBoolean(PREF_REMINDER_SETUP_PROMPTED, true)
+                            .apply();
+                    continueReminderFirstUsePermissions();
+                })
+                .setNegativeButton(R.string.permission_not_now, (ignored, which) -> {
+                    appPreferences
+                            .edit()
+                            .putBoolean(PREF_REMINDER_SETUP_PROMPTED, true)
+                            .apply();
+                    resetReminderSetupState();
+                    showReminderDialog();
+                })
+                .create();
+        dialog.setOnDismissListener(ignored -> permissionDialogShowing = false);
+        dialog.show();
+        applyWideDialogSize(dialog);
+    }
+
+    @SuppressLint("InlinedApi")
+    private void continueReminderFirstUsePermissions() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && !hasPermission(Manifest.permission.POST_NOTIFICATIONS)) {
+            requestPermissions(
+                    new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                    REQUEST_NOTIFICATIONS
+            );
+            return;
+        }
+        continueReminderFirstUseExactAlarm();
+    }
+
+    private void continueReminderFirstUseExactAlarm() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                && !ReminderScheduler.canScheduleExactAlarms(this)) {
+            showReminderExactAlarmIntroDialog();
+            return;
+        }
+        continueReminderChannelCheck();
+    }
+
+    /**
+     * Android 13+ allows each notification channel to be switched off on its
+     * own. The app cannot turn them back on, so this surfaces the deepest
+     * setting page for whatever category the reminder actually uses.
+     */
+    private void continueReminderChannelCheck() {
+        ReminderScheduler.ensureNotificationChannels(this);
+        boolean masterOff = !NotificationManagerCompat.from(this).areNotificationsEnabled();
+        boolean weakened = ReminderScheduler.isAlertChannelWeakened(
+                this,
+                pendingReminderAlertMode
+        );
+        boolean firstSetup = reminderFlow == REMINDER_FLOW_FIRST_USE
+                && !appPreferences.getBoolean(PREF_REMINDER_CHANNEL_GUIDE_SHOWN, false);
+        if (!masterOff && !weakened && !firstSetup) {
+            continueAfterChannelCheck();
+            return;
+        }
+        // Jump straight to the notification page and leave a short hint; the
+        // system never lets an app switch these categories on by itself.
+        Toast.makeText(this, R.string.reminder_channel_hint, Toast.LENGTH_LONG).show();
+        // Keep this screen long enough for the hint to be readable before the
+        // system page takes over.
+        new Handler(Looper.getMainLooper()).postDelayed(
+                this::openReminderChannelSettings,
+                CHANNEL_HINT_DELAY_MS
+        );
+    }
+
+    private void openReminderChannelSettings() {
+        persistReminderFlowStep("channel");
+        awaitingReminderChannelPermission = true;
+        appPreferences.edit()
+                .putBoolean(PREF_REMINDER_CHANNEL_GUIDE_SHOWN, true)
+                .apply();
+        try {
+            startActivity(new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName()));
+            return;
+        } catch (Exception ignored) {
+            // Fall back to the application details page.
+        }
+        try {
+            startActivity(new Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + getPackageName())
+            ));
+        } catch (Exception ignored) {
+            awaitingReminderChannelPermission = false;
+            continueAfterChannelCheck();
+        }
+    }
+
+    private void continueAfterChannelCheck() {
+        if (reminderFlow == REMINDER_FLOW_FIRST_USE) {
+            continueReminderFirstUseBatteryOptimization();
+        } else if (reminderFlow == REMINDER_FLOW_SCHEDULE) {
+            continueScheduleBatteryOptimization();
+        } else {
+            resetReminderSetupState();
+        }
+    }
+
+    @SuppressLint("InlinedApi")
+    private void showReminderExactAlarmIntroDialog() {
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.reminder_exact_alarm_title)
+                .setMessage(R.string.reminder_exact_alarm_message)
+                .setCancelable(false)
+                .setPositiveButton(
+                        R.string.reminder_exact_alarm_open,
+                        (ignored, which) -> openExactAlarmSettings()
+                )
+                .setNegativeButton(
+                        R.string.permission_not_now,
+                        (ignored, which) -> showExactAlarmRequiredAndReturn()
+                )
+                .create();
+        dialog.show();
+    }
+
+    @SuppressLint("BatteryLife")
+    private void continueReminderFirstUseBatteryOptimization() {
+        if (isIgnoringBatteryOptimizations()) {
+            offerReminderOemBackgroundGuidance(this::finishReminderFirstUseFlow);
+            return;
+        }
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.reminder_battery_optimization_title)
+                .setMessage(R.string.reminder_battery_optimization_message)
+                .setCancelable(false)
+                .setPositiveButton(
+                        R.string.reminder_battery_optimization_open,
+                        (ignored, which) -> openBatteryOptimizationSettings()
+                )
+                .setNegativeButton(
+                        R.string.permission_not_now,
+                        (ignored, which) -> {
+                            awaitingBatteryOptimizationPermission = false;
+                            finishReminderFirstUseFlow();
+                        }
+                )
+                .create();
+        dialog.show();
+    }
+
+    private void finishReminderFirstUseFlow() {
+        appPreferences
+                .edit()
+                .putBoolean(PREF_REMINDER_SETUP_PROMPTED, true)
+                .apply();
+        resetReminderSetupState();
+        showReminderDialog();
+    }
+
+    @SuppressLint("BatteryLife")
+    private void openBatteryOptimizationSettings() {
+        persistReminderFlowStep("battery");
+        awaitingBatteryOptimizationPermission = true;
+        Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                .setData(Uri.parse("package:" + getPackageName()));
+        try {
+            startActivity(intent);
+            return;
+        } catch (Exception ignored) {
+            // Some vendor builds do not expose the direct request screen.
+        }
+        try {
+            startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+            return;
+        } catch (Exception ignored) {
+            // Fall back to the per-app detail page.
+        }
+        awaitingBatteryOptimizationPermission = false;
+        showBackgroundSettingsRequiredDialog();
+    }
+
+    private boolean isIgnoringBatteryOptimizations() {
+        PowerManager powerManager =
+                (PowerManager) getSystemService(Context.POWER_SERVICE);
+        return powerManager != null
+                && powerManager.isIgnoringBatteryOptimizations(getPackageName());
+    }
+
+    private void showBackgroundSettingsRequiredDialog() {
+        if (backgroundSettingsDialogShowing) {
+            return;
+        }
+        backgroundSettingsDialogShowing = true;
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.reminder_background_settings_title)
+                .setMessage(R.string.reminder_background_settings_message)
+                .setPositiveButton(
+                        R.string.reminder_background_settings_open,
+                        (ignored, which) -> openAppDetailsSettings()
+                )
+                .setNegativeButton(
+                        R.string.permission_not_now,
+                        (ignored, which) -> continueAfterBackgroundSettings()
+                )
+                .create();
+        dialog.setOnDismissListener(ignored -> backgroundSettingsDialogShowing = false);
+        dialog.show();
+    }
+
+    private void openAppDetailsSettings() {
+        // Re-check as soon as the user comes back from the system page so the
+        // reminder flow continues by itself once background running is allowed.
+        persistReminderFlowStep("battery");
+        awaitingBatteryOptimizationPermission = true;
+        try {
+            startActivity(new Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + getPackageName())
+            ));
+            return;
+        } catch (Exception ignored) {
+            // Fall back to the vendor battery page below.
+        }
+        if (openOemPowerSettings()) {
+            return;
+        }
+        awaitingBatteryOptimizationPermission = false;
+    }
+
+    private boolean openOemPowerSettings() {
+        String manufacturer = Build.MANUFACTURER == null
+                ? ""
+                : Build.MANUFACTURER.toLowerCase(Locale.ROOT);
+        if (!manufacturer.contains("oneplus")
+                && !manufacturer.contains("oppo")
+                && !manufacturer.contains("realme")) {
+            return false;
+        }
+        Intent intent = new Intent()
+                .setComponent(new ComponentName(
+                        "com.android.settings",
+                        "com.android.settings.fuelgauge.AdvancedPowerUsageDetailActivity"
+                ))
+                .putExtra("package_name", getPackageName());
+        try {
+            startActivity(intent);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private void continueAfterBackgroundSettings() {
+        if (reminderFlow == REMINDER_FLOW_FIRST_USE) {
+            offerReminderOemBackgroundGuidance(this::finishReminderFirstUseFlow);
+        } else if (reminderFlow == REMINDER_FLOW_SCHEDULE) {
+            offerReminderOemBackgroundGuidance(this::finishScheduleReminder);
+        } else {
+            resetReminderSetupState();
+        }
+    }
+
+    private void showReminderDialog() {
+        View content = LayoutInflater.from(this).inflate(R.layout.dialog_reminder, null);
+        TextView countdown = content.findViewById(R.id.tvReminderCountdown);
+        TextView status = content.findViewById(R.id.tvReminderStatus);
+        TextView riskLink = content.findViewById(R.id.tvReminderRiskNotice);
+        RadioGroup leadGroup = content.findViewById(R.id.rgReminderLead);
+        RadioGroup modeGroup = content.findViewById(R.id.rgReminderMode);
+        RadioGroup intervalGroup = content.findViewById(R.id.rgVehicleAlertInterval);
+        boolean active = ReminderScheduler.isActive(this);
+        int selectedLead = active
+                ? ReminderScheduler.scheduledLeadMinutes(this)
+                : appPreferences.getInt(PREF_REMINDER_LEAD_MINUTES, 0);
+        String selectedMode = active
+                ? ReminderScheduler.scheduledAlertMode(this)
+                : appPreferences.getString(
+                        PREF_REMINDER_ALERT_MODE,
+                        ReminderScheduler.MODE_SOUND_VIBRATE
+                );
+        selectReminderLead(leadGroup, selectedLead);
+        selectReminderMode(modeGroup, selectedMode);
+        bindVehicleAlertInterval(content);
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle(R.string.reminder_dialog_title)
+                .setView(content)
+                .setPositiveButton(R.string.reminder_start, null)
+                .setNegativeButton(R.string.cancel, null);
+        AlertDialog dialog = builder.create();
+        riskLink.setOnClickListener(view -> showReminderRiskNotice(
+                true,
+                null,
+                dialog::dismiss
+        ));
+        dialog.setOnShowListener(ignored -> {
+            Button positive = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            positive.setText(active ? R.string.reminder_update : R.string.reminder_start);
+            Runnable refreshPositive = () -> {
+                persistReminderSelections(leadGroup);
+                boolean hasLead = leadGroup.getCheckedRadioButtonId() != -1;
+                boolean hasInterval = intervalGroup.getVisibility() == View.VISIBLE
+                        && intervalGroup.getCheckedRadioButtonId() != -1;
+                int selectedInterval = hasInterval
+                        ? alertIntervalFromId(intervalGroup.getCheckedRadioButtonId())
+                        : 0;
+                int runningInterval = currentVehicleAlertInterval();
+                boolean timerRowVisible = intervalGroup.getVisibility() == View.VISIBLE;
+                boolean timerChanged = timerRowVisible
+                        && (hasInterval
+                        ? selectedInterval != runningInterval
+                        : runningInterval > 0);
+                // 倒计时进行中、或车辆预警计时有变化时按钮保持可点。
+                boolean enabled = hasLead || active || timerChanged;
+                positive.setEnabled(enabled);
+                positive.setAlpha(enabled ? 1f : 0.4f);
+                // 只改车辆预警计时的时候，按钮直接写明对应的计时动作。
+                boolean timerOnly = timerChanged && !hasLead && !active;
+                if (timerOnly) {
+                    if (selectedInterval <= 0) {
+                        positive.setText(R.string.vehicle_alert_timer_off);
+                    } else if (runningInterval > 0) {
+                        positive.setText(R.string.vehicle_alert_timer_update);
+                    } else {
+                        positive.setText(R.string.vehicle_alert_timer_on);
+                    }
+                } else {
+                    positive.setText(active
+                            ? R.string.reminder_update
+                            : R.string.reminder_start);
+                }
+            };
+            makeChipsDeselectable(leadGroup, refreshPositive);
+            makeChipsDeselectable(intervalGroup, refreshPositive);
+            refreshPositive.run();
+            positive.setOnClickListener(view -> {
+                int leadMinutes = selectedReminderLead(leadGroup);
+                String alertMode = selectedReminderMode(modeGroup);
+                int alertInterval = intervalGroup.getVisibility() == View.VISIBLE
+                        ? alertIntervalFromId(intervalGroup.getCheckedRadioButtonId())
+                        : 0;
+                dialog.dismiss();
+                if (leadMinutes > 0) {
+                    if (active) {
+                        updateActiveReminder(leadMinutes, alertMode);
+                    } else {
+                        beginReminderSchedule(leadMinutes, alertMode);
+                    }
+                } else if (active) {
+                    // 提前提醒被取消 → 连同倒计时一起停止。
+                    ReminderScheduler.cancel(this);
+                    updateReminderButtonState();
+                    Toast.makeText(this, R.string.reminder_cancelled, Toast.LENGTH_SHORT).show();
+                }
+                applyVehicleAlertSelection(alertInterval);
+            });
+            bindReminderCountdown(countdown, status);
+        });
+        dialog.setOnDismissListener(ignored -> cancelReminderDialogTimer());
+        dialog.show();
+    }
+
+    /**
+     * 记住提前提醒的选择，下次打开沿用（0 = 未选择）。
+     * 车辆预警计时只在点确认时写入，点“取消”不会改动计时。
+     */
+    private void persistReminderSelections(RadioGroup leadGroup) {
+        appPreferences
+                .edit()
+                .putInt(PREF_REMINDER_LEAD_MINUTES, Math.max(0, selectedReminderLead(leadGroup)))
+                .apply();
+    }
+
+    /** Lets a chip be tapped again to clear the whole group. */
+    private void makeChipsDeselectable(RadioGroup group, Runnable onChanged) {
+        chipLastChecked.put(group.getId(), group.getCheckedRadioButtonId());
+        for (int index = 0; index < group.getChildCount(); index++) {
+            View child = group.getChildAt(index);
+            child.setOnClickListener(view -> {
+                int id = child.getId();
+                Integer last = chipLastChecked.get(group.getId());
+                if (last != null && last == id) {
+                    group.clearCheck();
+                    chipLastChecked.put(group.getId(), -1);
+                } else {
+                    chipLastChecked.put(group.getId(), id);
+                }
+                onChanged.run();
+            });
+        }
+    }
+
+    /**
+     * 应用提醒页对车辆预警计时的选择：选中间隔 = 开启/更新计时，
+     * 清空（未选择）= 关闭计时。这里只改计时，
+     * 功能开关始终由高级设置里的开关决定，不会被这里改动。
+     */
+    private void applyVehicleAlertSelection(int intervalSeconds) {
+        if (!appPreferences.getBoolean(PREF_VEHICLE_ALERT_ENABLED, false)) {
+            return;
+        }
+        int interval = Math.max(0, intervalSeconds);
+        int current = currentVehicleAlertInterval();
+        if (interval == current) {
+            return;
+        }
+        appPreferences
+                .edit()
+                .putInt(PREF_VEHICLE_ALERT_INTERVAL, interval)
+                .apply();
+        applyVehicleAlertState();
+        int message;
+        if (interval <= 0) {
+            message = R.string.vehicle_alert_timer_stopped;
+        } else if (current > 0) {
+            message = R.string.vehicle_alert_timer_updated;
+        } else {
+            message = R.string.vehicle_alert_timer_started;
+        }
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+    }
+
+    /** 计时开关的当前值：0 表示计时关闭。 */
+    private int currentVehicleAlertInterval() {
+        return Math.max(
+                0,
+                appPreferences.getInt(PREF_VEHICLE_ALERT_INTERVAL, 0)
+        );
+    }
+
+    private void updateActiveReminder(int leadMinutes, String alertMode) {
+        long startAt = ReminderScheduler.scheduledStartAt(this);
+        long endAt = ReminderScheduler.scheduledEndAt(this);
+        // Re-arming with a new lead time must be able to alert again for the
+        // same countdown (e.g. already alerted, user switches to 3 minutes).
+        ReminderScheduler.resetAlertDelivered(this);
+        boolean scheduled = ReminderScheduler.schedule(
+                this,
+                startAt,
+                endAt,
+                leadMinutes,
+                alertMode
+        );
+        Toast.makeText(
+                this,
+                scheduled ? R.string.reminder_updated : R.string.reminder_expired,
+                Toast.LENGTH_LONG
+        ).show();
+        updateReminderButtonState();
+    }
+
+    private void bindReminderCountdown(TextView countdown, TextView status) {
+        cancelReminderDialogTimer();
+        long remaining = ReminderScheduler.remainingMs(this);
+        if (remaining <= 0L) {
+            countdown.setText(R.string.reminder_default_countdown);
+            status.setText(R.string.reminder_timer_hint);
+            return;
+        }
+
+        countdown.setText(formatReminderTime(remaining));
+        status.setText(getString(
+                R.string.reminder_active_status,
+                ReminderScheduler.scheduledLeadMinutes(this)
+        ));
+        reminderDialogTimer = new CountDownTimer(remaining, 1_000L) {
+            @Override
+            public void onTick(long millisUntilFinished) {
+                countdown.setText(formatReminderTime(millisUntilFinished));
+            }
+
+            @Override
+            public void onFinish() {
+                countdown.setText(R.string.reminder_default_countdown_zero);
+                status.setText(R.string.reminder_finished_status);
+                updateReminderButtonState();
+            }
+        };
+        reminderDialogTimer.start();
+    }
+
+    private String formatReminderTime(long remainingMs) {
+        long totalSeconds = Math.max(0L, (remainingMs + 999L) / 1_000L);
+        return String.format(
+                Locale.CHINA,
+                "%02d:%02d",
+                totalSeconds / 60L,
+                totalSeconds % 60L
+        );
+    }
+
+    private void cancelReminderDialogTimer() {
+        if (reminderDialogTimer != null) {
+            reminderDialogTimer.cancel();
+            reminderDialogTimer = null;
+        }
+    }
+
+    private void showReminderRiskNotice() {
+        showReminderRiskNotice(true, null, null);
+    }
+
+    private void showReminderRiskNotice(Runnable onAccepted, Runnable onCancelled) {
+        showReminderRiskNotice(false, onAccepted, onCancelled);
+    }
+
+    private void showReminderRiskNotice(
+            boolean force,
+            Runnable onAccepted,
+            Runnable onCancelled
+    ) {
+        SharedPreferences preferences = appPreferences;
+        boolean muted = preferences.getBoolean(PREF_REMINDER_RISK_MUTED, false);
+        if (muted && !force) {
+            if (onAccepted != null) {
+                onAccepted.run();
+            }
+            return;
+        }
+
+        View content = LayoutInflater.from(this).inflate(
+                R.layout.dialog_reminder_notice,
+                null
+        );
+        TextView message = content.findViewById(R.id.tvReminderNoticeMessage);
+        message.setText(R.string.reminder_risk_message);
+        CheckBox mute = content.findViewById(R.id.cbReminderRiskMute);
+        mute.setChecked(muted);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.reminder_risk_title)
+                .setView(content)
+                .setCancelable(false)
+                .setPositiveButton(R.string.reminder_risk_accept, (ignored, which) -> {
+                    preferences.edit()
+                            .putBoolean(PREF_REMINDER_RISK_MUTED, mute.isChecked())
+                            .apply();
+                    if (onAccepted != null) {
+                        onAccepted.run();
+                    }
+                })
+                .setNegativeButton(R.string.reminder_risk_exit, (ignored, which) -> {
+                    if (onCancelled != null) {
+                        onCancelled.run();
+                    }
+                })
+                .create();
+        dialog.show();
+        applyWideDialogSize(dialog);
+    }
+
+    private void applyWideDialogSize(AlertDialog dialog) {
+        Window window = dialog.getWindow();
+        if (window == null) {
+            return;
+        }
+        window.setLayout(
+                Math.round(getResources().getDisplayMetrics().widthPixels * 0.92f),
+                WindowManager.LayoutParams.WRAP_CONTENT
+        );
+    }
+
+    private void selectReminderLead(RadioGroup group, int leadMinutes) {
+        if (leadMinutes <= 0) {
+            group.clearCheck();
+            return;
+        }
+        int id;
+        if (leadMinutes == 1) {
+            id = R.id.rbReminderLead1;
+        } else if (leadMinutes == 5) {
+            id = R.id.rbReminderLead5;
+        } else if (leadMinutes == 7) {
+            id = R.id.rbReminderLead7;
+        } else if (leadMinutes == 10) {
+            id = R.id.rbReminderLead10;
+        } else {
+            id = R.id.rbReminderLead3;
+        }
+        group.check(id);
+    }
+
+    private int selectedReminderLead(RadioGroup group) {
+        int checked = group.getCheckedRadioButtonId();
+        if (checked == -1) {
+            return -1;
+        }
+        if (checked == R.id.rbReminderLead1) {
+            return 1;
+        }
+        if (checked == R.id.rbReminderLead5) {
+            return 5;
+        }
+        if (checked == R.id.rbReminderLead7) {
+            return 7;
+        }
+        if (checked == R.id.rbReminderLead10) {
+            return 10;
+        }
+        return 3;
+    }
+
+    private void selectReminderMode(RadioGroup group, String alertMode) {
+        int id = ReminderScheduler.MODE_VIBRATE.equals(alertMode)
+                ? R.id.rbReminderVibrate
+                : ReminderScheduler.MODE_SILENT.equals(alertMode)
+                ? R.id.rbReminderSilent
+                : R.id.rbReminderSound;
+        group.check(id);
+    }
+
+    private String selectedReminderMode(RadioGroup group) {
+        int checked = group.getCheckedRadioButtonId();
+        if (checked == R.id.rbReminderVibrate) {
+            return ReminderScheduler.MODE_VIBRATE;
+        }
+        if (checked == R.id.rbReminderSilent) {
+            return ReminderScheduler.MODE_SILENT;
+        }
+        return ReminderScheduler.MODE_SOUND_VIBRATE;
+    }
+
+    @SuppressLint("InlinedApi")
+    private void beginReminderSchedule(int leadMinutes, String alertMode) {
+        long now = System.currentTimeMillis();
+        long endAt = now + ReminderScheduler.DURATION_MS;
+        pendingReminderLeadMinutes = leadMinutes;
+        pendingReminderAlertMode = alertMode;
+        pendingReminderStartAt = endAt - ReminderScheduler.DURATION_MS;
+        pendingReminderEndAt = endAt;
+        reminderFlow = REMINDER_FLOW_SCHEDULE;
+        continueScheduleExactAlarm();
+    }
+
+    @SuppressLint("InlinedApi")
+    private void continueScheduleExactAlarm() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && !hasPermission(Manifest.permission.POST_NOTIFICATIONS)) {
+            showReminderNotificationPermissionDialog();
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                && !ReminderScheduler.canScheduleExactAlarms(this)) {
+            showExactAlarmPermissionDialog();
+            return;
+        }
+        continueReminderChannelCheck();
+    }
+
+    private void showExactAlarmPermissionDialog() {
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.reminder_exact_alarm_title)
+                .setMessage(R.string.reminder_exact_alarm_message)
+                .setPositiveButton(
+                        R.string.reminder_exact_alarm_open,
+                        (ignored, which) -> openExactAlarmSettings()
+                )
+                .setNegativeButton(
+                        R.string.permission_not_now,
+                        (ignored, which) -> resetReminderSetupState()
+                )
+                .create();
+        dialog.show();
+    }
+
+    @SuppressLint("InlinedApi")
+    private void showReminderNotificationPermissionDialog() {
+        if (permissionDialogShowing) {
+            return;
+        }
+        permissionDialogShowing = true;
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.reminder_notification_permission_title)
+                .setMessage(R.string.reminder_notification_permission_message)
+                .setCancelable(false)
+                .setPositiveButton(
+                        R.string.permission_continue,
+                        (ignored, which) -> requestPermissions(
+                                new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                                REQUEST_NOTIFICATIONS
+                        )
+                )
+                .setNegativeButton(
+                        R.string.permission_not_now,
+                        (ignored, which) -> {
+                            boolean firstUse = reminderFlow == REMINDER_FLOW_FIRST_USE;
+                            resetReminderSetupState();
+                            if (firstUse) {
+                                showReminderDialog();
+                            }
+                        }
+                )
+                .create();
+        dialog.setOnDismissListener(ignored -> permissionDialogShowing = false);
+        dialog.show();
+    }
+
+    private void showNotificationPermissionRequiredDialog() {
+        showNotificationPermissionRequiredDialog(reminderFlow);
+    }
+
+    private void showNotificationPermissionRequiredDialog(int pendingFlow) {
+        if (pendingFlow == REMINDER_FLOW_FIRST_USE
+                || pendingFlow == REMINDER_FLOW_SCHEDULE) {
+            reminderFlow = pendingFlow;
+        }
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.reminder_notification_settings_title)
+                .setMessage(R.string.reminder_notification_settings_message)
+                .setPositiveButton(
+                        R.string.reminder_exact_alarm_open,
+                        (ignored, which) -> openReminderChannelSettings()
+                )
+                .setNegativeButton(R.string.permission_not_now, null)
+                .create();
+        dialog.show();
+    }
+
+    private void openAppNotificationSettings() {
+        try {
+            startActivity(new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName()));
+        } catch (RuntimeException ignored) {
+            try {
+                startActivity(new Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:" + getPackageName())
+                ));
+            } catch (RuntimeException ignoredAgain) {
+                // No system settings page is available on this device.
+            }
+        }
+    }
+
+    @SuppressLint("InlinedApi")
+    private void openExactAlarmSettings() {
+        persistReminderFlowStep("exact_alarm");
+        awaitingExactAlarmPermission = true;
+        Intent packageIntent = new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
+                .setData(Uri.parse("package:" + getPackageName()));
+        try {
+            startActivity(packageIntent);
+            return;
+        } catch (Exception ignored) {
+            // Some vendor builds only accept the generic settings action.
+        }
+        try {
+            startActivity(new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM));
+        } catch (Exception ignored) {
+            awaitingExactAlarmPermission = false;
+            showExactAlarmRequiredAndReturn();
+        }
+    }
+
+    private void resumeExactAlarmPermissionFlow() {
+        if (!awaitingExactAlarmPermission) {
+            return;
+        }
+        awaitingExactAlarmPermission = false;
+        if (!ReminderScheduler.canScheduleExactAlarms(this)) {
+            showExactAlarmRequiredAndReturn();
+            return;
+        }
+        // 精确闹钟设置页返回后仍需检查通知类别，避免跳过后台运行申请。
+        continueReminderChannelCheck();
+    }
+
+    private void showExactAlarmRequiredAndReturn() {
+        ReminderScheduler.cancel(this);
+        resetReminderSetupState();
+        updateReminderButtonState();
+        showExactAlarmPermissionDialog();
+    }
+
+    @SuppressLint("BatteryLife")
+    private void continueScheduleBatteryOptimization() {
+        if (isIgnoringBatteryOptimizations()) {
+            offerReminderOemBackgroundGuidance(this::finishScheduleReminder);
+            return;
+        }
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.reminder_battery_optimization_title)
+                .setMessage(R.string.reminder_battery_optimization_message)
+                .setCancelable(false)
+                .setPositiveButton(
+                        R.string.reminder_battery_optimization_open,
+                        (ignored, which) -> openBatteryOptimizationSettings()
+                )
+                .setNegativeButton(
+                        R.string.permission_not_now,
+                        (ignored, which) -> {
+                            awaitingBatteryOptimizationPermission = false;
+                            finishScheduleReminder();
+                        }
+                )
+                .create();
+        dialog.show();
+    }
+
+    private void finishScheduleReminder() {
+        if (!ReminderScheduler.canScheduleExactAlarms(this)) {
+            showExactAlarmRequiredAndReturn();
+            return;
+        }
+        schedulePendingReminder();
+    }
+
+    private void schedulePendingReminder() {
+        boolean scheduled = ReminderScheduler.schedule(
+                this,
+                pendingReminderStartAt,
+                pendingReminderEndAt,
+                pendingReminderLeadMinutes,
+                pendingReminderAlertMode
+        );
+        if (scheduled) {
+            Toast.makeText(
+                    this,
+                    getString(
+                            R.string.reminder_started_exact,
+                            pendingReminderLeadMinutes
+                    ),
+                    Toast.LENGTH_LONG
+            ).show();
+        } else {
+            int failureMessage = pendingReminderEndAt <= System.currentTimeMillis()
+                    ? R.string.reminder_expired
+                    : R.string.reminder_schedule_failed;
+            Toast.makeText(this, failureMessage, Toast.LENGTH_LONG).show();
+        }
+        resetReminderSetupState();
+        updateReminderButtonState();
+    }
+
+    private void resetReminderSetupState() {
+        pendingReminderLeadMinutes = ReminderScheduler.DEFAULT_LEAD_MINUTES;
+        pendingReminderAlertMode = ReminderScheduler.MODE_SOUND_VIBRATE;
+        pendingReminderStartAt = 0L;
+        pendingReminderEndAt = 0L;
+        awaitingExactAlarmPermission = false;
+        awaitingBatteryOptimizationPermission = false;
+        awaitingReminderChannelPermission = false;
+        reminderFlow = REMINDER_FLOW_NONE;
+        clearReminderFlowStep();
+    }
+
+    /** 记录当前等待用户操作的系统页面，便于 Activity/进程被重建后继续流程。 */
+    private void persistReminderFlowStep(String step) {
+        appPreferences.edit()
+                .putInt(PREF_REMINDER_PENDING_FLOW, reminderFlow)
+                .putString(PREF_REMINDER_PENDING_STEP, step == null ? "" : step)
+                .apply();
+    }
+
+    private void clearReminderFlowStep() {
+        appPreferences.edit()
+                .putInt(PREF_REMINDER_PENDING_FLOW, REMINDER_FLOW_NONE)
+                .putString(PREF_REMINDER_PENDING_STEP, "")
+                .apply();
+    }
+
+    /**
+     * 跳系统设置页时应用可能被系统回收，导致权限流程只走了一半。
+     * 这里把未完成的流程记在本机，重建后继续申请精确闹钟/后台运行等权限。
+     */
+    private void restoreReminderFlowStep() {
+        int flow = appPreferences.getInt(PREF_REMINDER_PENDING_FLOW, REMINDER_FLOW_NONE);
+        String step = appPreferences.getString(PREF_REMINDER_PENDING_STEP, "");
+        if (flow == REMINDER_FLOW_NONE || step == null || step.isEmpty()) {
+            return;
+        }
+        reminderFlow = flow;
+        if ("exact_alarm".equals(step)) {
+            awaitingExactAlarmPermission = true;
+        } else if ("channel".equals(step)) {
+            awaitingReminderChannelPermission = true;
+        } else if ("battery".equals(step)) {
+            awaitingBatteryOptimizationPermission = true;
+        }
+    }
+
+    /** 已放行电池优化时，部分机型还需厂商级「后台活动/自启动」才不会被冻结。 */
+    private void offerReminderOemBackgroundGuidance(Runnable onDone) {
+        if (appPreferences.getBoolean(PREF_REMINDER_OEM_GUIDE_SHOWN, false)) {
+            onDone.run();
+            return;
+        }
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.reminder_background_settings_title)
+                .setMessage(R.string.reminder_background_settings_message)
+                .setCancelable(false)
+                .setPositiveButton(
+                        R.string.reminder_background_settings_open,
+                        (ignored, which) -> {
+                            appPreferences.edit()
+                                    .putBoolean(PREF_REMINDER_OEM_GUIDE_SHOWN, true)
+                                    .apply();
+                            openAppDetailsSettings();
+                        }
+                )
+                .setNegativeButton(
+                        R.string.permission_not_now,
+                        (ignored, which) -> {
+                            appPreferences.edit()
+                                    .putBoolean(PREF_REMINDER_OEM_GUIDE_SHOWN, true)
+                                    .apply();
+                            onDone.run();
+                        }
+                )
+                .create();
+        dialog.show();
+    }
+
+    private void updateReminderButtonState() {
+        if (btnReminder == null) {
+            return;
+        }
+        boolean active = ReminderScheduler.isActive(this);
+        btnReminder.setImageTintList(ColorStateList.valueOf(getColor(
+                active ? R.color.control_accent : R.color.map_control_icon
+        )));
+        btnReminder.setContentDescription(getString(
+                active ? R.string.reminder_button_active : R.string.reminder_button
+        ));
     }
 
     private void exitApplication() {
@@ -680,7 +2187,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
                         tvStatus.setText(R.string.permission_location);
                     } else if (requestCode == REQUEST_STORAGE) {
                         pendingQrBitmap = null;
-                        pendingQrNumber = -1;
+                        pendingQrNumber = "";
                         pendingOpenWeChatAfterQrSave = false;
                     }
                 })
@@ -727,6 +2234,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
                         bikes.clear();
                         bikes.addAll(result);
                         renderMap();
+                        updateDataRefreshTime(fetchedAt);
                         finishLoadRequest();
                         updateViewportStatus();
                     }
@@ -755,6 +2263,16 @@ public final class MainActivity extends BaseActivity implements LocationListener
         pendingRequestCenter = null;
         pendingRequestForce = false;
         loadBikes(nextCenter, nextForce);
+    }
+
+    private void updateDataRefreshTime(long fetchedAt) {
+        if (tvDataLabel == null) {
+            return;
+        }
+        tvDataLabel.setText(getString(
+                R.string.status_live_with_time,
+                refreshTimeFormat.format(new Date(fetchedAt))
+        ));
     }
 
     private void scheduleMapCenterRefresh() {
@@ -821,14 +2339,18 @@ public final class MainActivity extends BaseActivity implements LocationListener
         if (bikeCallout == null) {
             bikeCallout = new BikeCallout(mapView);
         }
+        if (userLocationCallout == null) {
+            userLocationCallout = new UserLocationCallout(mapView);
+        }
 
         if (currentLocation != null) {
             if (userMarker == null) {
                 userMarker = new Marker(mapView);
                 userMarker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER);
                 userMarker.setIcon(getDrawable(R.drawable.ic_user_location));
-                userMarker.setTitle("我的位置");
+                userMarker.setTitle(getString(R.string.my_location));
             }
+            userMarker.setInfoWindow(userLocationCallout);
             userMarker.setPosition(CoordinateUtils.wgs84ToGcj02(
                     currentLocation.getLatitude(),
                     currentLocation.getLongitude()
@@ -848,11 +2370,11 @@ public final class MainActivity extends BaseActivity implements LocationListener
             marker.setPosition(new GeoPoint(bike.latitude, bike.longitude));
             marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER);
             marker.setIcon(getDrawable(
-                    selectedBike != null && selectedBike.number == bike.number
+                    selectedBike != null && selectedBike.number.equals(bike.number)
                             ? R.drawable.ic_bike_marker_selected
                             : R.drawable.ic_bike_marker
             ));
-            marker.setTitle(String.valueOf(bike.number));
+            marker.setTitle(bike.number);
             marker.setInfoWindow(bikeCallout);
             marker.setOnMarkerClickListener((clickedMarker, map) -> {
                 lastMarkerTapAt = SystemClock.uptimeMillis();
@@ -864,7 +2386,37 @@ public final class MainActivity extends BaseActivity implements LocationListener
         }
 
         updateMapLabels();
+        updateMapCenterIndicator();
         mapView.invalidate();
+    }
+
+    private void updateMapCenterIndicator() {
+        if (mapCenterIndicator == null || currentLocation == null) {
+            if (mapCenterIndicator != null) {
+                mapCenterIndicator.setVisibility(View.GONE);
+            }
+            return;
+        }
+        if (recenterInProgress) {
+            mapCenterIndicator.setVisibility(View.GONE);
+            return;
+        }
+        double distance = distanceBetween(
+                mapCenterGcj02(),
+                currentLocationDisplayPoint()
+        );
+        mapCenterIndicator.setVisibility(
+                distance > CENTER_INDICATOR_DISTANCE_METERS
+                        ? View.VISIBLE
+                        : View.GONE
+        );
+    }
+
+    private GeoPoint currentLocationDisplayPoint() {
+        return CoordinateUtils.wgs84ToGcj02(
+                currentLocation.getLatitude(),
+                currentLocation.getLongitude()
+        );
     }
 
     /**
@@ -938,7 +2490,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
         if (!bike.locationKnown) {
             tvBikeMeta.setText(R.string.bike_meta_manual);
         } else {
-            String detail = bike.status;
+            String detail = getString(bike.statusRes);
             if (!bike.model.isEmpty()) {
                 detail += " · " + bike.model;
             }
@@ -948,6 +2500,21 @@ public final class MainActivity extends BaseActivity implements LocationListener
                     formatDistance(bike.distanceMeters),
                     detail
             ));
+        }
+
+        if (!bike.locationKnown || bike.lastUploadAtMs <= 0L) {
+            tvBikeFreshness.setVisibility(View.GONE);
+        } else {
+            long ageMs = Math.max(0L, System.currentTimeMillis() - bike.lastUploadAtMs);
+            String uploadClock = ageMs < 24L * 60L * 60L * 1000L
+                    ? refreshTimeFormat.format(new Date(bike.lastUploadAtMs))
+                    : uploadTimeFormat.format(new Date(bike.lastUploadAtMs));
+            tvBikeFreshness.setText(getString(
+                    R.string.bike_last_upload,
+                    uploadClock,
+                    formatUploadAge(ageMs)
+            ));
+            tvBikeFreshness.setVisibility(View.VISIBLE);
         }
 
         Marker marker = bikeMarkers.get(bike.number);
@@ -963,9 +2530,9 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     private void updateMarkerSelection() {
-        for (Map.Entry<Long, Marker> entry : bikeMarkers.entrySet()) {
+        for (Map.Entry<String, Marker> entry : bikeMarkers.entrySet()) {
             boolean selected = selectedBike != null
-                    && selectedBike.number == entry.getKey();
+                    && selectedBike.number.equals(entry.getKey());
             entry.getValue().setIcon(getDrawable(
                     selected
                             ? R.drawable.ic_bike_marker_selected
@@ -1087,14 +2654,14 @@ public final class MainActivity extends BaseActivity implements LocationListener
         labels.addView(textView(
                 formatDistance(bike.distanceMeters)
                         + " · " + formatBatteryLabel(bike)
-                        + " · " + bike.status,
+                        + " · " + getString(bike.statusRes),
                 11,
                 R.color.text_tertiary,
                 false
         ));
         row.addView(labels, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
-        TextView action = textView("查看", 13, R.color.brand_green_dark, true);
+        TextView action = textView(getString(R.string.action_view), 13, R.color.control_accent_text, true);
         action.setGravity(Gravity.CENTER);
         row.addView(action, new LinearLayout.LayoutParams(dp(48), ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -1135,10 +2702,18 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private void showNumberInput() {
         View content = LayoutInflater.from(this).inflate(R.layout.dialog_number_input, null);
         EditText input = content.findViewById(R.id.inputTail);
-        TextView preview = content.findViewById(R.id.tvInputPreview);
+        View previewPanel = content.findViewById(R.id.inputPreviewPanel);
+        TextView previewNumber = content.findViewById(R.id.tvInputPreviewNumber);
+        TextView previewSite = content.findViewById(R.id.tvInputPreviewSite);
         TextView error = content.findViewById(R.id.tvInputError);
+        TextView numberSite = content.findViewById(R.id.tvNumberSite);
+        TextView numberSeries = content.findViewById(R.id.tvNumberSeries);
+        View numberRangeRow = content.findViewById(R.id.numberRangeRow);
+        LinearLayout historySection = content.findViewById(R.id.historySection);
+        LinearLayout historyContainer = content.findViewById(R.id.historyContainer);
+        TextView clearHistory = content.findViewById(R.id.tvClearHistory);
         input.setFilters(new InputFilter[]{
-                new InputFilter.LengthFilter(VEHICLE_TAIL_LENGTH),
+                new InputFilter.LengthFilter(VehicleNumberCatalog.NUMBER_LENGTH),
                 (source, start, end, destination, destinationStart, destinationEnd) -> {
                     for (int index = start; index < end; index++) {
                         if (!Character.isDigit(source.charAt(index))) {
@@ -1150,11 +2725,168 @@ public final class MainActivity extends BaseActivity implements LocationListener
         });
 
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(R.string.input_title)
                 .setView(content)
                 .setPositiveButton(R.string.confirm, null)
                 .setNegativeButton(R.string.cancel, null)
                 .create();
+
+        int initialSiteId = preferredNumberSiteId();
+        String initialSeries = preferredNumberSeries(initialSiteId);
+        int[] selectedSiteId = {initialSiteId};
+        String[] selectedSeries = {initialSeries};
+        String[] resolvedNumber = {null};
+        List<List<VehicleNumberCatalog.NumberInfo>> candidateMatches = new ArrayList<>();
+        Runnable[] updateResolutionRef = new Runnable[1];
+
+        Runnable updateResolution = () -> {
+            String raw = input.getText().toString().trim();
+            VehicleNumberCatalog.Site selectedSite = vehicleNumberCatalog.site(selectedSiteId[0]);
+            if (selectedSite != null) {
+                numberSite.setText(selectedSite.name);
+                numberSeries.setText(getString(
+                        R.string.number_series_title_format,
+                        selectedSeries[0]
+                ));
+            }
+
+            resolvedNumber[0] = null;
+            candidateMatches.clear();
+            error.setVisibility(View.GONE);
+            previewPanel.setVisibility(View.GONE);
+            previewPanel.setClickable(false);
+            previewPanel.setOnClickListener(null);
+            previewSite.setVisibility(View.GONE);
+            if (raw.isEmpty()) {
+                setNumberConfirmEnabled(dialog, false);
+                return;
+            }
+
+            if (raw.length() == VehicleNumberCatalog.NUMBER_LENGTH) {
+                VehicleNumberCatalog.NumberInfo info = vehicleNumberCatalog.find(raw);
+                if (info == null) {
+                    error.setText(R.string.input_number_not_found);
+                    error.setVisibility(View.VISIBLE);
+                    setNumberConfirmEnabled(dialog, false);
+                    return;
+                }
+                selectedSiteId[0] = info.siteId;
+                selectedSeries[0] = info.series;
+                resolvedNumber[0] = info.number;
+                numberSite.setText(info.siteName);
+                numberSeries.setText(getString(
+                        R.string.number_series_title_format,
+                        info.series
+                ));
+                previewNumber.setText(getString(
+                        R.string.input_preview_number,
+                        info.number
+                ));
+                previewSite.setVisibility(View.GONE);
+                previewPanel.setVisibility(View.VISIBLE);
+                setNumberConfirmEnabled(dialog, true);
+                return;
+            }
+
+            if (raw.length() == VehicleNumberCatalog.TAIL_LENGTH || raw.length() == 4) {
+                List<VehicleNumberCatalog.NumberInfo> seriesMatches =
+                        vehicleNumberCatalog.matchesSuffix(
+                                selectedSiteId[0],
+                                selectedSeries[0],
+                                raw
+                        );
+                List<VehicleNumberCatalog.NumberInfo> siteMatches =
+                        vehicleNumberCatalog.matchesSuffix(
+                                selectedSiteId[0],
+                                null,
+                                raw
+                        );
+                List<VehicleNumberCatalog.NumberInfo> matches = seriesMatches.isEmpty()
+                        ? siteMatches
+                        : seriesMatches;
+                if (matches.size() == 1) {
+                    VehicleNumberCatalog.NumberInfo info = matches.get(0);
+                    selectedSiteId[0] = info.siteId;
+                    selectedSeries[0] = info.series;
+                    resolvedNumber[0] = info.number;
+                    numberSite.setText(info.siteName);
+                    numberSeries.setText(getString(
+                            R.string.number_series_title_format,
+                            info.series
+                    ));
+                    previewNumber.setText(getString(
+                            R.string.input_preview_number,
+                            info.number
+                    ));
+                    previewSite.setVisibility(View.GONE);
+                    previewPanel.setVisibility(View.VISIBLE);
+                    setNumberConfirmEnabled(dialog, true);
+                    return;
+                }
+                if (matches.size() > 1) {
+                    candidateMatches.add(matches);
+                    previewNumber.setText(getString(
+                            R.string.input_number_candidates,
+                            matches.size()
+                    ));
+                    previewSite.setText(R.string.input_number_candidates_hint);
+                    previewSite.setVisibility(View.VISIBLE);
+                    previewPanel.setClickable(true);
+                    previewPanel.setFocusable(true);
+                    previewPanel.setOnClickListener(view -> showNumberCandidates(
+                            candidateMatches.get(0),
+                            selectedSiteId,
+                            selectedSeries,
+                            updateResolutionRef[0]
+                    ));
+                    previewPanel.setVisibility(View.VISIBLE);
+                    setNumberConfirmEnabled(dialog, false);
+                    return;
+                }
+
+                error.setText(R.string.input_number_not_found);
+                error.setVisibility(View.VISIBLE);
+                setNumberConfirmEnabled(dialog, false);
+                return;
+            }
+
+            error.setText(R.string.input_number_incomplete);
+            error.setVisibility(View.VISIBLE);
+            setNumberConfirmEnabled(dialog, false);
+        };
+        updateResolutionRef[0] = updateResolution;
+
+        numberRangeRow.setOnClickListener(view -> showNumberRangePicker(
+                selectedSiteId,
+                selectedSeries,
+                updateResolution
+        ));
+
+        historyContainer.setShowDividers(LinearLayout.SHOW_DIVIDER_MIDDLE);
+        historyContainer.setDividerDrawable(new ColorDrawable(getColor(R.color.divider)));
+        historyContainer.setDividerPadding(dp(6));
+
+        List<String> history = loadQrHistory();
+        if (!history.isEmpty()) {
+            historySection.setVisibility(View.VISIBLE);
+            clearHistory.setOnClickListener(view -> {
+                clearQrHistory();
+                historyContainer.removeAllViews();
+                historySection.setVisibility(View.GONE);
+                Toast.makeText(
+                        this,
+                        R.string.history_cleared,
+                        Toast.LENGTH_SHORT
+                ).show();
+            });
+            for (String number : history) {
+                View row = createHistoryRow(number);
+                row.setOnClickListener(view -> {
+                    dialog.dismiss();
+                    openQrInWeChat(number);
+                });
+                historyContainer.addView(row);
+            }
+        }
 
         input.addTextChangedListener(new TextWatcher() {
             @Override
@@ -1164,15 +2896,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
 
             @Override
             public void onTextChanged(CharSequence value, int start, int before, int count) {
-                String tail = value.toString();
-                preview.setVisibility(tail.isEmpty() ? View.INVISIBLE : View.VISIBLE);
-                preview.setText(getString(R.string.input_preview, tail));
-                error.setVisibility(View.GONE);
-                if (dialog.isShowing()) {
-                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(
-                            tail.length() == VEHICLE_TAIL_LENGTH
-                    );
-                }
+                updateResolution.run();
             }
 
             @Override
@@ -1185,45 +2909,343 @@ public final class MainActivity extends BaseActivity implements LocationListener
             Button confirm = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
             confirm.setEnabled(false);
             confirm.setOnClickListener(view -> {
-                String tail = input.getText().toString();
-                if (tail.length() != VEHICLE_TAIL_LENGTH) {
-                    error.setText(R.string.invalid_number);
-                    error.setVisibility(View.VISIBLE);
+                updateResolution.run();
+                String number = resolvedNumber[0];
+                if (number == null) {
                     return;
                 }
-                long number = VEHICLE_NUMBER_BASE + Long.parseLong(tail);
+                appPreferences.edit()
+                        .putInt(PREF_NUMBER_SITE_ID, selectedSiteId[0])
+                        .putString(PREF_NUMBER_SERIES, selectedSeries[0])
+                        .apply();
                 Bike bike = findOrCreateBike(number);
                 dialog.dismiss();
                 showBikeDetail(bike, true);
             });
+            updateResolution.run();
             input.requestFocus();
         });
         dialog.show();
     }
 
-    private Bike findOrCreateBike(long number) {
+    private void showNumberCandidates(
+            List<VehicleNumberCatalog.NumberInfo> candidates,
+            int[] selectedSiteId,
+            String[] selectedSeries,
+            Runnable onChanged
+    ) {
+        String[] labels = new String[candidates.size()];
+        for (int index = 0; index < candidates.size(); index++) {
+            VehicleNumberCatalog.NumberInfo candidate = candidates.get(index);
+            labels[index] = candidate.number + " · " + candidate.siteName;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.number_candidates_title)
+                .setItems(labels, (dialog, which) -> {
+                    VehicleNumberCatalog.NumberInfo info = candidates.get(which);
+                    selectedSiteId[0] = info.siteId;
+                    selectedSeries[0] = info.series;
+                    onChanged.run();
+                })
+                .setNegativeButton(R.string.cancel, null)
+                .show();
+    }
+
+    private void showNumberRangePicker(
+            int[] selectedSiteId,
+            String[] selectedSeries,
+            Runnable onChanged
+    ) {
+        List<VehicleNumberCatalog.Site> sites = vehicleNumberCatalog.sites();
+        String[] titles = new String[sites.size()];
+        String[] subtitles = new String[sites.size()];
+        for (int index = 0; index < sites.size(); index++) {
+            VehicleNumberCatalog.Site site = sites.get(index);
+            titles[index] = site.name;
+            subtitles[index] = getString(
+                    R.string.number_site_series_count,
+                    site.series.size()
+            );
+        }
+        showNumberOptions(
+                R.string.number_range_site_title,
+                titles,
+                subtitles,
+                which -> {
+                    VehicleNumberCatalog.Site site = sites.get(which);
+                    selectedSiteId[0] = site.id;
+                    if (!site.series.contains(selectedSeries[0])) {
+                        selectedSeries[0] = site.series.get(0);
+                    }
+                    if (site.series.size() == 1) {
+                        selectedSeries[0] = site.series.get(0);
+                        onChanged.run();
+                        return;
+                    }
+                    onChanged.run();
+                    showNumberSeriesPicker(site, selectedSeries, onChanged);
+                }
+        );
+    }
+
+    private void showNumberSeriesPicker(
+            VehicleNumberCatalog.Site site,
+            String[] selectedSeries,
+            Runnable onChanged
+    ) {
+        String[] titles = new String[site.series.size()];
+        String[] subtitles = new String[site.series.size()];
+        for (int index = 0; index < site.series.size(); index++) {
+            String series = site.series.get(index);
+            titles[index] = getString(
+                    R.string.number_series_title_format,
+                    series
+            );
+            subtitles[index] = getString(
+                    R.string.number_series_subtitle_format,
+                    series
+            );
+        }
+        showNumberOptions(
+                R.string.number_range_series_title,
+                titles,
+                subtitles,
+                which -> {
+                    selectedSeries[0] = site.series.get(which);
+                    onChanged.run();
+                }
+        );
+    }
+
+    private interface NumberOptionListener {
+        void onSelected(int index);
+    }
+
+    private void showNumberOptions(
+            int titleRes,
+            String[] titles,
+            String[] subtitles,
+            NumberOptionListener listener
+    ) {
+        View content = LayoutInflater.from(this).inflate(
+                R.layout.dialog_number_options,
+                null
+        );
+        LinearLayout container = content.findViewById(R.id.numberOptionsContainer);
+        LayoutInflater inflater = LayoutInflater.from(this);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(titleRes)
+                .setView(content)
+                .setNegativeButton(R.string.cancel, null)
+                .create();
+        for (int index = 0; index < titles.length; index++) {
+            View row = inflater.inflate(R.layout.item_number_option, container, false);
+            TextView title = row.findViewById(R.id.tvNumberOptionTitle);
+            TextView subtitle = row.findViewById(R.id.tvNumberOptionSubtitle);
+            title.setText(titles[index]);
+            if (subtitles[index] == null || subtitles[index].isEmpty()) {
+                subtitle.setVisibility(View.GONE);
+            } else {
+                subtitle.setText(subtitles[index]);
+                subtitle.setVisibility(View.VISIBLE);
+            }
+            int selectedIndex = index;
+            row.setOnClickListener(view -> {
+                dialog.dismiss();
+                listener.onSelected(selectedIndex);
+            });
+            container.addView(row);
+        }
+        dialog.show();
+    }
+
+    private int preferredNumberSiteId() {
+        if (selectedBike != null) {
+            VehicleNumberCatalog.NumberInfo info = vehicleNumberCatalog.find(selectedBike.number);
+            if (info != null) {
+                return info.siteId;
+            }
+        }
+        int stored = appPreferences.getInt(PREF_NUMBER_SITE_ID, -1);
+        if (vehicleNumberCatalog.site(stored) != null) {
+            return stored;
+        }
+        return vehicleNumberCatalog.sites().get(0).id;
+    }
+
+    private String preferredNumberSeries(int siteId) {
+        VehicleNumberCatalog.Site site = vehicleNumberCatalog.site(siteId);
+        if (site == null || site.series.isEmpty()) {
+            return "";
+        }
+        String stored = appPreferences.getString(PREF_NUMBER_SERIES, "");
+        if (stored != null && site.series.contains(stored)) {
+            return stored;
+        }
+        return site.series.get(0);
+    }
+
+    private void setNumberConfirmEnabled(AlertDialog dialog, boolean enabled) {
+        if (dialog.isShowing()) {
+            Button confirm = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            if (confirm != null) {
+                confirm.setEnabled(enabled);
+            }
+        }
+    }
+
+    private View createHistoryRow(String number) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(dp(10), dp(5), dp(10), dp(5));
+        row.setBackgroundResource(R.drawable.bg_list_row);
+        row.setMinimumHeight(dp(38));
+
+        VehicleNumberCatalog.NumberInfo info = vehicleNumberCatalog.find(number);
+        LinearLayout labels = new LinearLayout(this);
+        labels.setOrientation(LinearLayout.VERTICAL);
+        labels.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView numberView = textView(
+                number,
+                15,
+                R.color.text_primary,
+                true
+        );
+        numberView.setSingleLine(true);
+        labels.addView(numberView, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+        if (info != null) {
+            TextView siteView = textView(
+                    info.siteName,
+                    12,
+                    R.color.text_secondary,
+                    false
+            );
+            siteView.setMaxLines(2);
+            labels.addView(siteView, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+            ));
+        }
+        row.addView(labels, new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                1
+        ));
+
+        TextView action = textView(
+                getString(R.string.history_action),
+                12,
+                R.color.control_accent_text,
+                true
+        );
+        action.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        action.setSingleLine(true);
+        action.setMinWidth(dp(76));
+        action.setPadding(dp(8), 0, 0, 0);
+        row.addView(action, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+        return row;
+    }
+
+    private List<String> loadQrHistory() {
+        if (!appPreferences
+                .getBoolean(PREF_KEEP_QR_HISTORY, true)) {
+            return new ArrayList<>();
+        }
+        String raw = appPreferences
+                .getString(PREF_QR_HISTORY, "");
+        List<String> history = new ArrayList<>();
+        if (raw == null || raw.isEmpty()) {
+            return history;
+        }
+        for (String value : raw.split(",")) {
+            String stored = value.trim();
+            if (stored.isEmpty()) {
+                continue;
+            }
+            String number = VehicleNumberCatalog.normalize(stored);
+            if (vehicleNumberCatalog.find(number) == null && stored.length() <= 3) {
+                String tail = VehicleNumberCatalog.normalize(stored);
+                number = "100000" + tail.substring(tail.length() - VehicleNumberCatalog.TAIL_LENGTH);
+            }
+            if (!number.matches("\\d{9}") || history.contains(number)) {
+                continue;
+            }
+            history.add(number);
+            if (history.size() >= QR_HISTORY_LIMIT) {
+                break;
+            }
+        }
+        saveQrHistory(history);
+        return history;
+    }
+
+    private void rememberQrHistory(String number) {
+        if (!appPreferences
+                .getBoolean(PREF_KEEP_QR_HISTORY, true)) {
+            clearQrHistory();
+            return;
+        }
+        String normalized = VehicleNumberCatalog.normalize(number);
+        List<String> history = loadQrHistory();
+        history.remove(normalized);
+        history.add(0, normalized);
+        while (history.size() > QR_HISTORY_LIMIT) {
+            history.remove(history.size() - 1);
+        }
+        saveQrHistory(history);
+    }
+
+    private void saveQrHistory(List<String> history) {
+        if (!appPreferences
+                .getBoolean(PREF_KEEP_QR_HISTORY, true)) {
+            clearQrHistory();
+            return;
+        }
+        StringBuilder raw = new StringBuilder();
+        for (int index = 0; index < history.size(); index++) {
+            if (index > 0) {
+                raw.append(',');
+            }
+            raw.append(history.get(index));
+        }
+        appPreferences
+                .edit()
+                .putString(PREF_QR_HISTORY, raw.toString())
+                .apply();
+    }
+
+    private void clearQrHistory() {
+        appPreferences
+                .edit()
+                .remove(PREF_QR_HISTORY)
+                .apply();
+    }
+
+    private Bike findOrCreateBike(String number) {
+        String normalized = VehicleNumberCatalog.normalize(number);
         for (Bike bike : bikes) {
-            if (bike.number == number) {
+            if (bike.number.equals(normalized)) {
                 return bike;
             }
         }
-        return Bike.manual(number);
+        VehicleNumberCatalog.NumberInfo info = vehicleNumberCatalog.find(normalized);
+        return Bike.manual(normalized, info == null ? "" : info.siteName);
     }
 
     private void showQrDialog(Bike bike) {
-        Bitmap qrBitmap;
-        try {
-            qrBitmap = new BarcodeEncoder().encodeBitmap(
-                    bike.qrUrl(),
-                    BarcodeFormat.QR_CODE,
-                    720,
-                    720
-            );
-        } catch (WriterException exception) {
-            Toast.makeText(this, R.string.qr_generate_failed, Toast.LENGTH_LONG)
-                    .show();
+        Bitmap qrBitmap = createQrBitmap(bike);
+        if (qrBitmap == null) {
             return;
         }
+        rememberQrHistory(bike.number);
 
         View content = LayoutInflater.from(this).inflate(R.layout.dialog_qr, null);
         ImageView imageView = content.findViewById(R.id.qrImage);
@@ -1231,7 +3253,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
         Button copyButton = content.findViewById(R.id.btnCopyQr);
         Button wechatButton = content.findViewById(R.id.btnQrWechat);
         View qrActions = content.findViewById(R.id.qrActions);
-        SharedPreferences preferences = getSharedPreferences(PREFS_APP, MODE_PRIVATE);
+        SharedPreferences preferences = appPreferences;
         imageView.setImageBitmap(qrBitmap);
         urlView.setText(bike.qrUrl());
         urlView.setVisibility(
@@ -1246,7 +3268,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
         );
 
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("车辆二维码 · " + bike.number)
+                .setTitle(getString(R.string.qr_dialog_title, bike.number))
                 .setView(content)
                 .setNegativeButton(R.string.close, null)
                 .create();
@@ -1266,12 +3288,46 @@ public final class MainActivity extends BaseActivity implements LocationListener
         }
     }
 
-    private void saveQrAndOpenWeChat(Bitmap bitmap, long number) {
+    private Bitmap createQrBitmap(Bike bike) {
+        int size = 720;
+        try {
+            BitMatrix matrix = new QRCodeWriter().encode(
+                    bike.qrUrl(),
+                    BarcodeFormat.QR_CODE,
+                    size,
+                    size
+            );
+            int[] pixels = new int[size * size];
+            for (int y = 0; y < size; y++) {
+                int row = y * size;
+                for (int x = 0; x < size; x++) {
+                    pixels[row + x] = matrix.get(x, y) ? Color.BLACK : Color.WHITE;
+                }
+            }
+            return Bitmap.createBitmap(pixels, size, size, Bitmap.Config.ARGB_8888);
+        } catch (WriterException exception) {
+            Toast.makeText(this, R.string.qr_generate_failed, Toast.LENGTH_LONG)
+                    .show();
+            return null;
+        }
+    }
+
+    private void openQrInWeChat(String number) {
+        Bike bike = findOrCreateBike(number);
+        Bitmap qrBitmap = createQrBitmap(bike);
+        if (qrBitmap == null) {
+            return;
+        }
+        rememberQrHistory(number);
+        saveQrAndOpenWeChat(qrBitmap, number);
+    }
+
+    private void saveQrAndOpenWeChat(Bitmap bitmap, String number) {
         pendingOpenWeChatAfterQrSave = true;
         saveQrToGallery(bitmap, number);
     }
 
-    private void saveQrToGallery(Bitmap bitmap, long number) {
+    private void saveQrToGallery(Bitmap bitmap, String number) {
         if (bitmap == null) {
             return;
         }
@@ -1290,67 +3346,18 @@ public final class MainActivity extends BaseActivity implements LocationListener
         openWeChatAfterQrSaveIfNeeded(performQrSave(bitmap, number));
     }
 
-    private boolean performQrSave(Bitmap bitmap, long number) {
-        // When the save is only a preparation step for opening WeChat, the
-        // system Toast would keep floating above WeChat's scanner and cover
-        // its album button, so no in-app hint is shown on that path.
+    private boolean performQrSave(Bitmap bitmap, String number) {
         boolean openWeChatAfterSave = pendingOpenWeChatAfterQrSave;
-        String fileName = "bike_qr_" + number + "_" + System.currentTimeMillis() + ".png";
-        Uri savedUri = null;
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                ContentValues values = new ContentValues();
-                values.put(MediaStore.Images.Media.DISPLAY_NAME, fileName);
-                values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
-                values.put(
-                        MediaStore.Images.Media.RELATIVE_PATH,
-                        Environment.DIRECTORY_PICTURES + "/BikeMap"
-                );
-                values.put(MediaStore.Images.Media.IS_PENDING, 1);
-                savedUri = getContentResolver().insert(
-                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                        values
-                );
-                if (savedUri == null) {
-                    throw new IOException("无法创建相册文件");
-                }
-                try (OutputStream output = getContentResolver().openOutputStream(savedUri)) {
-                    if (output == null || !bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) {
-                        throw new IOException("无法写入二维码图片");
-                    }
-                }
-                values.clear();
-                values.put(MediaStore.Images.Media.IS_PENDING, 0);
-                getContentResolver().update(savedUri, values, null, null);
-            } else {
-                String uriString = MediaStore.Images.Media.insertImage(
-                        getContentResolver(),
-                        bitmap,
-                        fileName,
-                        "车辆二维码"
-                );
-                if (uriString == null || uriString.trim().isEmpty()) {
-                    throw new IOException("无法写入相册");
-                }
-                savedUri = Uri.parse(uriString);
-            }
-
-            scheduleQrDeletion(savedUri);
-            if (!openWeChatAfterSave) {
-                Toast.makeText(this, R.string.qr_saved, Toast.LENGTH_LONG).show();
-            }
-            return true;
-        } catch (Exception exception) {
-            if (savedUri != null) {
-                try {
-                    getContentResolver().delete(savedUri, null, null);
-                } catch (Exception ignored) {
-                    // The incomplete file is left for the system media scanner.
-                }
-            }
+        QrGalleryStore.SavedQr pending = qrGalleryStore.save(bitmap, number);
+        if (pending == null) {
             Toast.makeText(this, R.string.qr_save_failed, Toast.LENGTH_LONG).show();
             return false;
         }
+        scheduleQrDeletion(pending);
+        if (!openWeChatAfterSave) {
+            Toast.makeText(this, R.string.qr_saved, Toast.LENGTH_LONG).show();
+        }
+        return true;
     }
 
     private void openWeChatAfterQrSaveIfNeeded(boolean saved) {
@@ -1361,90 +3368,43 @@ public final class MainActivity extends BaseActivity implements LocationListener
         }
     }
 
-    private void scheduleQrDeletion(Uri uri) {
-        long expiresAt = System.currentTimeMillis() + QR_AUTO_DELETE_MS;
-        rememberPendingQr(uri, expiresAt);
+    private void scheduleQrDeletion(QrGalleryStore.SavedQr pending) {
+        qrGalleryStore.remember(pending);
         uiHandler.postDelayed(
-                () -> deletePendingQr(uri, true),
-                QR_AUTO_DELETE_MS
+                () -> deletePendingQr(pending, true),
+                QrGalleryStore.AUTO_DELETE_MS
         );
     }
 
     private void cleanupExpiredQrSaves() {
-        SharedPreferences preferences = getSharedPreferences(PREFS_APP, MODE_PRIVATE);
-        Set<String> stored = preferences.getStringSet(PREF_PENDING_QR_DELETES, null);
-        if (stored == null || stored.isEmpty()) {
-            return;
-        }
-
         long now = System.currentTimeMillis();
-        for (String entry : new HashSet<>(stored)) {
-            String[] parts = entry.split("\\|", 2);
-            if (parts.length != 2) {
-                removePendingQr(entry);
-                continue;
-            }
-            try {
-                long expiresAt = Long.parseLong(parts[0]);
-                Uri uri = Uri.parse(parts[1]);
-                if (expiresAt <= now) {
-                    deletePendingQr(uri, false);
-                } else {
-                    uiHandler.postDelayed(
-                            () -> deletePendingQr(uri, false),
-                            expiresAt - now
-                    );
-                }
-            } catch (NumberFormatException exception) {
-                removePendingQr(entry);
-            }
+        for (QrGalleryStore.SavedQr pending : qrGalleryStore.loadPending()) {
+            long delay = Math.max(1_000L, pending.expiresAt - now);
+            uiHandler.postDelayed(
+                    () -> deletePendingQr(pending, false),
+                    delay
+            );
         }
     }
 
-    private void rememberPendingQr(Uri uri, long expiresAt) {
-        SharedPreferences preferences = getSharedPreferences(PREFS_APP, MODE_PRIVATE);
-        Set<String> stored = new HashSet<>(
-                preferences.getStringSet(PREF_PENDING_QR_DELETES, new HashSet<>())
-        );
-        stored.add(expiresAt + "|" + uri);
-        preferences.edit().putStringSet(PREF_PENDING_QR_DELETES, stored).apply();
-    }
-
-    private void deletePendingQr(Uri uri, boolean showFailure) {
-        try {
-            getContentResolver().delete(uri, null, null);
-            removePendingQr("|" + uri);
-        } catch (Exception exception) {
-            if (showFailure) {
-                Toast.makeText(this, R.string.qr_delete_failed, Toast.LENGTH_LONG).show();
-            }
+    private void deletePendingQr(
+            QrGalleryStore.SavedQr pending,
+            boolean showFailure
+    ) {
+        if (!qrGalleryStore.delete(pending) && showFailure) {
+            Toast.makeText(this, R.string.qr_delete_failed, Toast.LENGTH_LONG).show();
         }
-    }
-
-    private void removePendingQr(String entryOrUriSuffix) {
-        SharedPreferences preferences = getSharedPreferences(PREFS_APP, MODE_PRIVATE);
-        Set<String> stored = new HashSet<>(
-                preferences.getStringSet(PREF_PENDING_QR_DELETES, new HashSet<>())
-        );
-        Set<String> updated = new HashSet<>();
-        for (String entry : stored) {
-            if (!entry.equals(entryOrUriSuffix)
-                    && !entry.endsWith(entryOrUriSuffix)) {
-                updated.add(entry);
-            }
-        }
-        preferences.edit().putStringSet(PREF_PENDING_QR_DELETES, updated).apply();
     }
 
     private void copyToClipboard(String text) {
         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-        clipboard.setPrimaryClip(ClipData.newPlainText("车辆二维码链接", text));
+        clipboard.setPrimaryClip(ClipData.newPlainText(getString(R.string.qr_clipboard_label), text));
         Toast.makeText(this, R.string.copied, Toast.LENGTH_SHORT).show();
     }
 
     /**
-     * Matches the two WeChat scan entry points used by JUWP-Schedule's
-     * "快趣出行" screen, then falls back to opening WeChat's home screen.
+     * Matches the two WeChat scan entry points used by the reference
+     * shortcut flow, then falls back to opening WeChat's home screen.
      */
     private void openWeChatScanner() {
         Intent dispatchScan = new Intent("com.tencent.mm.ui.ShortCutDispatchAction")
@@ -1482,9 +3442,9 @@ public final class MainActivity extends BaseActivity implements LocationListener
 
     private String formatDistance(float distanceMeters) {
         if (distanceMeters < 1000f) {
-            return Math.round(distanceMeters) + " 米";
+            return getString(R.string.distance_meters_format, Math.round(distanceMeters));
         }
-        return String.format(Locale.CHINA, "%.1f 公里", distanceMeters / 1000f);
+        return getString(R.string.distance_kilometers_format, distanceMeters / 1000f);
     }
 
     private String formatBattery(double batteryPercent) {
@@ -1500,6 +3460,21 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private String formatBatteryLabel(Bike bike) {
         String value = formatBattery(bike.batteryPercent);
         return "--".equals(value) ? value : value + "%";
+    }
+
+    private String formatUploadAge(long ageMs) {
+        long minutes = Math.max(0L, ageMs) / 60_000L;
+        if (minutes < 1L) {
+            return getString(R.string.bike_upload_just_now);
+        }
+        if (minutes < 60L) {
+            return getString(R.string.bike_upload_minutes_ago, minutes);
+        }
+        long hours = minutes / 60L;
+        if (hours < 24L) {
+            return getString(R.string.bike_upload_hours_ago, hours);
+        }
+        return getString(R.string.bike_upload_days_ago, hours / 24L);
     }
 
     private int dp(int value) {
@@ -1592,20 +3567,31 @@ public final class MainActivity extends BaseActivity implements LocationListener
             userMarker = new Marker(mapView);
             userMarker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER);
             userMarker.setIcon(getDrawable(R.drawable.ic_user_location));
-            userMarker.setTitle("我的位置");
+            userMarker.setTitle(getString(R.string.my_location));
         }
+        if (userLocationCallout == null) {
+            userLocationCallout = new UserLocationCallout(mapView);
+        }
+        userMarker.setInfoWindow(userLocationCallout);
         // Never leave the position marker detached from the overlay list: a
         // rebuild without a known location used to drop the dot for good.
         if (!mapView.getOverlays().contains(userMarker)) {
             mapView.getOverlays().add(userMarker);
         }
         userMarker.setPosition(displayPoint);
+        updateMapCenterIndicator();
         mapView.invalidate();
 
         if (!initialLocationCentered) {
             initialLocationCentered = true;
+            recenterInProgress = true;
+            mapCenterIndicator.setVisibility(View.GONE);
             mapView.getController().animateTo(displayPoint);
             loadBikes(displayPoint, true);
+            mapView.postDelayed(() -> {
+                recenterInProgress = false;
+                updateMapCenterIndicator();
+            }, RECENTER_ANIMATION_MS);
         }
     }
 
@@ -1641,14 +3627,31 @@ public final class MainActivity extends BaseActivity implements LocationListener
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
 
+        if (requestCode == REQUEST_NOTIFICATIONS) {
+            if (grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                if (reminderFlow == REMINDER_FLOW_FIRST_USE) {
+                    continueReminderFirstUseExactAlarm();
+                } else if (reminderFlow == REMINDER_FLOW_SCHEDULE) {
+                    continueScheduleExactAlarm();
+                }
+            } else {
+                int pendingFlow = reminderFlow;
+                resetReminderSetupState();
+                updateReminderButtonState();
+                showNotificationPermissionRequiredDialog(pendingFlow);
+            }
+            return;
+        }
+
         if (grantResults.length == 0 || grantResults[0] != PackageManager.PERMISSION_GRANTED) {
             if (requestCode == REQUEST_LOCATION) {
-                tvStatus.setText(R.string.location_denied);
+                tvStatus.setText(R.string.permission_location);
             } else if (requestCode == REQUEST_STORAGE) {
                 pendingQrBitmap = null;
-                pendingQrNumber = -1;
+                pendingQrNumber = "";
                 pendingOpenWeChatAfterQrSave = false;
-                Toast.makeText(this, R.string.permission_storage_message, Toast.LENGTH_LONG)
+                Toast.makeText(this, R.string.permission_storage_denied, Toast.LENGTH_LONG)
                         .show();
             }
             return;
@@ -1658,19 +3661,121 @@ public final class MainActivity extends BaseActivity implements LocationListener
             startLocationUpdates();
         } else if (requestCode == REQUEST_STORAGE
                 && pendingQrBitmap != null
-                && pendingQrNumber > 0) {
+                && !pendingQrNumber.isEmpty()) {
             Bitmap bitmap = pendingQrBitmap;
-            long number = pendingQrNumber;
+            String number = pendingQrNumber;
             pendingQrBitmap = null;
-            pendingQrNumber = -1;
+            pendingQrNumber = "";
             openWeChatAfterQrSaveIfNeeded(performQrSave(bitmap, number));
+        }
+    }
+
+    /**
+     * 提醒到时的小方块：只在应用处于前台、且当前页面就是主页面时显示。
+     * 由 ReminderScheduler 在提醒触发时调用；不在前台时什么也不弹，只留系统通知。
+     */
+    void showReminderAlertSquare(int leadMinutes) {
+        runOnUiThread(() -> {
+            if (foregroundInstance != this) {
+                // 不在前台：只留系统通知，回到前台后也不再补弹。
+                return;
+            }
+            View root = findViewById(R.id.root);
+            if (!(root instanceof ViewGroup)) {
+                return;
+            }
+            if (reminderAlertOverlay == null) {
+                reminderAlertOverlay = LayoutInflater.from(this).inflate(
+                        R.layout.activity_reminder_alert,
+                        (ViewGroup) root,
+                        false
+                );
+                reminderAlertOverlay.findViewById(R.id.reminderAlertRoot)
+                        .setOnClickListener(view -> dismissReminderAlertSquare());
+                reminderAlertOverlay.findViewById(R.id.reminderAlertCard)
+                        .setOnClickListener(view -> openWeChatFromReminderAlert());
+                ((ViewGroup) root).addView(reminderAlertOverlay);
+            }
+            TextView message = reminderAlertOverlay.findViewById(R.id.tvReminderAlertMessage);
+            if (message != null) {
+                message.setText(getString(R.string.reminder_alert_short, leadMinutes));
+            }
+            slideReminderAlertCardIn();
+        });
+    }
+
+    private void slideReminderAlertCardIn() {
+        if (reminderAlertOverlay == null) {
+            return;
+        }
+        View card = reminderAlertOverlay.findViewById(R.id.reminderAlertCard);
+        card.post(() -> {
+            float offset = card.getWidth()
+                    + getResources().getDisplayMetrics().density * 16f;
+            card.setTranslationX(offset);
+            card.setAlpha(0f);
+            card.animate()
+                    .translationX(0f)
+                    .alpha(1f)
+                    .setDuration(REMINDER_ALERT_SLIDE_MS)
+                    .start();
+        });
+    }
+
+    private void dismissReminderAlertSquare() {
+        View overlay = reminderAlertOverlay;
+        reminderAlertOverlay = null;
+        if (overlay == null) {
+            return;
+        }
+        ViewGroup parent = overlay.getParent() instanceof ViewGroup
+                ? (ViewGroup) overlay.getParent()
+                : null;
+        if (parent != null) {
+            parent.removeView(overlay);
+        }
+    }
+
+    private void openWeChatFromReminderAlert() {
+        dismissReminderAlertSquare();
+        openWeChatHome();
+    }
+
+    /**
+     * 提醒小方块点击后跳转微信主页面。
+     * 微信的小程序面板/小程序列表属于非导出组件（EXT_OPEN_APPBRAND_LAUNCHER_UI
+     * 是签名级权限），第三方应用无法直接打开，所以这里只负责把微信带到主页面。
+     */
+    private void openWeChatHome() {
+        Intent dispatch = new Intent("com.tencent.mm.ui.ShortCutDispatchAction")
+                .setPackage("com.tencent.mm");
+        if (tryLaunchWeChat(dispatch)) {
+            return;
+        }
+        Intent launchIntent = getPackageManager().getLaunchIntentForPackage("com.tencent.mm");
+        if (launchIntent != null) {
+            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            try {
+                startActivity(launchIntent);
+            } catch (RuntimeException exception) {
+                Toast.makeText(this, R.string.wechat_not_installed, Toast.LENGTH_LONG).show();
+            }
+        } else {
+            Toast.makeText(this, R.string.wechat_not_installed, Toast.LENGTH_LONG).show();
         }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        foregroundInstance = this;
         mapView.onResume();
+        if (reminderFlow == REMINDER_FLOW_NONE && ReminderScheduler.isActive(this)) {
+            ReminderScheduler.rescheduleActive(this);
+        }
+        resumeReminderPermissionFlow();
+        updateReminderButtonState();
+        applyVehicleAlertState();
         // Foreground-only location: re-register on every resume, otherwise the
         // position stays frozen after the app returns from the background.
         if (hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)) {
@@ -1678,8 +3783,40 @@ public final class MainActivity extends BaseActivity implements LocationListener
         }
     }
 
+    private void resumeReminderPermissionFlow() {
+        // 已经从系统设置页回来，保存的待办步骤可以清掉。
+        if (awaitingExactAlarmPermission
+                || awaitingReminderChannelPermission
+                || awaitingBatteryOptimizationPermission) {
+            clearReminderFlowStep();
+        }
+        if (awaitingExactAlarmPermission) {
+            resumeExactAlarmPermissionFlow();
+            return;
+        }
+        if (awaitingReminderChannelPermission) {
+            awaitingReminderChannelPermission = false;
+            // 从通知设置页返回后必须重新验证总开关和提醒类别，
+            // 否则用户未真正开启时会被错误地继续到后台运行流程。
+            continueReminderChannelCheck();
+            return;
+        }
+        if (awaitingBatteryOptimizationPermission) {
+            awaitingBatteryOptimizationPermission = false;
+            if (!isIgnoringBatteryOptimizations()) {
+                showBackgroundSettingsRequiredDialog();
+            } else {
+                continueAfterBackgroundSettings();
+            }
+            return;
+        }
+    }
+
     @Override
     protected void onPause() {
+        if (foregroundInstance == this) {
+            foregroundInstance = null;
+        }
         stopLocationUpdates();
         mapView.onPause();
         super.onPause();
@@ -1688,8 +3825,11 @@ public final class MainActivity extends BaseActivity implements LocationListener
     @Override
     protected void onDestroy() {
         uiHandler.removeCallbacks(refreshFromMapCenterRunnable);
+        cancelReminderDialogTimer();
         stopLocationUpdates();
-        repository.shutdown();
+        if (repository != null) {
+            repository.shutdown();
+        }
         super.onDestroy();
     }
 

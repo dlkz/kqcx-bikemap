@@ -1,13 +1,40 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="brand_green">#0F8F6A</color>
-    <color name="brand_green_dark">#087354</color>
-    <color name="selection_accent">#D46B18</color>
-    <color name="text_primary">#17211D</color>
-    <color name="text_secondary">#5E6B66</color>
-    <color name="text_tertiary">#8A9590</color>
+    <!-- One cool hue (H≈205°) drives every neutral; greys are that hue at 2–6% saturation. -->
+    <color name="on_brand">#FFFFFF</color>
+    <color name="selection_accent">@color/control_accent</color>
+    <!-- Deep, saturated teal for in-app controls and accents. -->
+    <color name="control_accent">#0F6E8C</color>
+    <!-- Slightly deeper step used where an accent must sit on white and stay crisp. -->
+    <color name="settings_control_accent">#0C5D77</color>
+    <!-- Readable accent for accent-coloured small text. -->
+    <color name="control_accent_text">#0F6E8C</color>
+    <!-- Muted cool grey for low emphasis affordances such as list chevrons. -->
+    <color name="control_muted">#8A949B</color>
+    <!-- Switch accent: deep teal, consistent with the control accent. -->
+    <color name="option_switch">#0F6E8C</color>
+    <color name="text_primary">#16202A</color>
+    <color name="text_secondary">#4A5560</color>
+    <color name="text_tertiary">#66717C</color>
+    <!-- Cards float on white; the page behind them carries the light grey. -->
     <color name="surface">#FFFFFF</color>
-    <color name="surface_soft">#F3F7F5</color>
-    <color name="divider">#1A17211D</color>
-    <color name="warning">#D46B18</color>
+    <color name="surface_soft">#F1F5F7</color>
+    <color name="surface_group">#E7EDF1</color>
+    <color name="map_control_surface">#FFFFFF</color>
+    <color name="map_control_icon">#101010</color>
+    <color name="divider">#1A0B1620</color>
+    <!-- Hairline that defines raised cards against the page background. -->
+    <color name="card_hairline">#140B1620</color>
+    <color name="marker_outline">@color/option_switch</color>
+    <color name="center_marker">#263238</color>
+    <color name="center_marker_inner">#FFFFFF</color>
+    <color name="location_marker">@color/control_accent</color>
+    <!-- A whisper-thin cool outline keeps white cards legible without looking boxed in. -->
+    <color name="accent_outline">@color/card_hairline</color>
+    <color name="button_primary">#1A4068</color>
+    <color name="button_primary_text">#FFFFFF</color>
+    <color name="warning">#8A6218</color>
+    <!-- Launcher icon keeps a fixed colour pair and does not follow the theme. -->
+    <color name="app_icon_bg">#1A4068</color>
+    <color name="app_icon_fg">#EDE1C2</color>
 </resources>

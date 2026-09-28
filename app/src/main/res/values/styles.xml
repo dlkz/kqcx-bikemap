@@ -2,7 +2,8 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">@color/brand_green</item>
+        <item name="android:colorAccent">@color/settings_control_accent</item>
+        <item name="android:alertDialogTheme">@style/AppDialogTheme</item>
         <item name="android:navigationBarColor">@color/surface</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">true</item>
@@ -14,7 +15,8 @@
 
     <style name="AppTheme_Dark" parent="@android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">@color/brand_green</item>
+        <item name="android:colorAccent">@color/settings_control_accent</item>
+        <item name="android:alertDialogTheme">@style/AppDialogTheme_Dark</item>
         <item name="android:navigationBarColor">@color/surface</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">false</item>
@@ -22,5 +24,20 @@
         <item name="android:windowActionModeOverlay">true</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:forceDarkAllowed" tools:targetApi="29">false</item>
+    </style>
+
+
+    <style name="AppDialogTheme" parent="@android:style/Theme.Material.Light.Dialog.Alert">
+        <item name="android:colorAccent">@color/text_primary</item>
+        <item name="android:textColorPrimary">@color/text_primary</item>
+        <item name="android:textColorSecondary">@color/text_secondary</item>
+        <item name="android:windowBackground">@drawable/bg_dialog</item>
+    </style>
+
+    <style name="AppDialogTheme_Dark" parent="@android:style/Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">@color/text_primary</item>
+        <item name="android:textColorPrimary">@color/text_primary</item>
+        <item name="android:textColorSecondary">@color/text_secondary</item>
+        <item name="android:windowBackground">@drawable/bg_dialog</item>
     </style>
 </resources>

@@ -1,0 +1,329 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingStart="22dp"
+    android:paddingTop="4dp"
+    android:paddingEnd="22dp"
+    android:paddingBottom="6dp">
+
+    <TextView
+        android:id="@+id/tvReminderRiskNotice"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="?android:attr/selectableItemBackground"
+        android:clickable="true"
+        android:focusable="true"
+        android:gravity="end"
+        android:paddingTop="2dp"
+        android:paddingBottom="2dp"
+        android:text="@string/reminder_risk_link"
+        android:textColor="@color/control_accent_text"
+        android:textSize="12sp" />
+
+    <TextView
+        android:id="@+id/tvReminderCountdown"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fontFamily="sans"
+        android:gravity="center"
+        android:text="@string/reminder_default_countdown"
+        android:textColor="@color/text_primary"
+        android:textSize="38sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/tvReminderStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:gravity="center"
+        android:text="@string/reminder_timer_hint"
+        android:textColor="@color/text_secondary"
+        android:textSize="13sp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="20dp"
+        android:text="@string/reminder_lead_title"
+        android:textColor="@color/text_secondary"
+        android:textSize="13sp" />
+
+    <RadioGroup
+        android:id="@+id/rgReminderLead"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:orientation="horizontal">
+
+        <RadioButton
+            android:id="@+id/rbReminderLead1"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_reminder_option"
+            android:button="@null"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:minHeight="0dp"
+            android:minWidth="0dp"
+            android:paddingStart="0dp"
+            android:paddingEnd="0dp"
+            android:text="@string/reminder_lead_1"
+            android:textColor="@color/reminder_option_text"
+            android:textSize="13sp"
+            android:layout_marginEnd="4dp" />
+
+        <RadioButton
+            android:id="@+id/rbReminderLead3"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_reminder_option"
+            android:button="@null"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:minHeight="0dp"
+            android:minWidth="0dp"
+            android:paddingStart="0dp"
+            android:paddingEnd="0dp"
+            android:text="@string/reminder_lead_3"
+            android:textColor="@color/reminder_option_text"
+            android:textSize="13sp"
+            android:layout_marginStart="4dp"
+            android:layout_marginEnd="4dp" />
+
+        <RadioButton
+            android:id="@+id/rbReminderLead5"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_reminder_option"
+            android:button="@null"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:minHeight="0dp"
+            android:minWidth="0dp"
+            android:paddingStart="0dp"
+            android:paddingEnd="0dp"
+            android:text="@string/reminder_lead_5"
+            android:textColor="@color/reminder_option_text"
+            android:textSize="13sp"
+            android:layout_marginStart="4dp"
+            android:layout_marginEnd="4dp" />
+
+        <RadioButton
+            android:id="@+id/rbReminderLead7"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_reminder_option"
+            android:button="@null"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:minHeight="0dp"
+            android:minWidth="0dp"
+            android:paddingStart="0dp"
+            android:paddingEnd="0dp"
+            android:text="@string/reminder_lead_7"
+            android:textColor="@color/reminder_option_text"
+            android:textSize="13sp"
+            android:layout_marginStart="4dp"
+            android:layout_marginEnd="4dp" />
+
+        <RadioButton
+            android:id="@+id/rbReminderLead10"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_reminder_option"
+            android:button="@null"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:minHeight="0dp"
+            android:minWidth="0dp"
+            android:paddingStart="0dp"
+            android:paddingEnd="0dp"
+            android:text="@string/reminder_lead_10"
+            android:textColor="@color/reminder_option_text"
+            android:textSize="13sp"
+            android:layout_marginStart="4dp" />
+    </RadioGroup>
+
+    <TextView
+        android:id="@+id/tvVehicleAlertIntervalTitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="18dp"
+        android:text="@string/vehicle_alert_interval_title"
+        android:textColor="@color/text_secondary"
+        android:textSize="13sp"
+        android:visibility="gone" />
+
+    <RadioGroup
+        android:id="@+id/rgVehicleAlertInterval"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:orientation="horizontal"
+        android:visibility="gone">
+
+        <RadioButton
+            android:id="@+id/rbAlertInterval10"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_reminder_option"
+            android:button="@null"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:minHeight="0dp"
+            android:minWidth="0dp"
+            android:paddingStart="0dp"
+            android:paddingEnd="0dp"
+            android:text="@string/vehicle_alert_interval_10"
+            android:textColor="@color/reminder_option_text"
+            android:textSize="13sp"
+            android:layout_marginEnd="4dp" />
+
+        <RadioButton
+            android:id="@+id/rbAlertInterval30"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_reminder_option"
+            android:button="@null"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:minHeight="0dp"
+            android:minWidth="0dp"
+            android:paddingStart="0dp"
+            android:paddingEnd="0dp"
+            android:text="@string/vehicle_alert_interval_30"
+            android:textColor="@color/reminder_option_text"
+            android:textSize="13sp"
+            android:layout_marginStart="4dp"
+            android:layout_marginEnd="4dp" />
+
+        <RadioButton
+            android:id="@+id/rbAlertInterval60"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_reminder_option"
+            android:button="@null"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:minHeight="0dp"
+            android:minWidth="0dp"
+            android:paddingStart="0dp"
+            android:paddingEnd="0dp"
+            android:text="@string/vehicle_alert_interval_60"
+            android:textColor="@color/reminder_option_text"
+            android:textSize="13sp"
+            android:layout_marginStart="4dp"
+            android:layout_marginEnd="4dp" />
+
+        <RadioButton
+            android:id="@+id/rbAlertInterval180"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_reminder_option"
+            android:button="@null"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:minHeight="0dp"
+            android:minWidth="0dp"
+            android:paddingStart="0dp"
+            android:paddingEnd="0dp"
+            android:text="@string/vehicle_alert_interval_180"
+            android:textColor="@color/reminder_option_text"
+            android:textSize="13sp"
+            android:layout_marginStart="4dp"
+            android:layout_marginEnd="4dp" />
+
+        <RadioButton
+            android:id="@+id/rbAlertInterval300"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_reminder_option"
+            android:button="@null"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:minHeight="0dp"
+            android:minWidth="0dp"
+            android:paddingStart="0dp"
+            android:paddingEnd="0dp"
+            android:text="@string/vehicle_alert_interval_300"
+            android:textColor="@color/reminder_option_text"
+            android:textSize="13sp"
+            android:layout_marginStart="4dp" />
+    </RadioGroup>
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="18dp"
+        android:text="@string/reminder_mode_title"
+        android:textColor="@color/text_secondary"
+        android:textSize="13sp" />
+
+    <RadioGroup
+        android:id="@+id/rgReminderMode"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:orientation="vertical">
+
+        <RadioButton
+            android:id="@+id/rbReminderSound"
+            android:layout_width="match_parent"
+            android:layout_height="46dp"
+            android:background="@drawable/bg_reminder_option"
+            android:button="@null"
+            android:gravity="start|center_vertical"
+            android:includeFontPadding="false"
+            android:minHeight="0dp"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:text="@string/reminder_mode_sound"
+            android:textColor="@color/reminder_option_text"
+            android:textSize="15sp" />
+
+        <RadioButton
+            android:id="@+id/rbReminderVibrate"
+            android:layout_width="match_parent"
+            android:layout_height="46dp"
+            android:layout_marginTop="6dp"
+            android:background="@drawable/bg_reminder_option"
+            android:button="@null"
+            android:gravity="start|center_vertical"
+            android:includeFontPadding="false"
+            android:minHeight="0dp"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:text="@string/reminder_mode_vibrate"
+            android:textColor="@color/reminder_option_text"
+            android:textSize="15sp" />
+
+        <RadioButton
+            android:id="@+id/rbReminderSilent"
+            android:layout_width="match_parent"
+            android:layout_height="46dp"
+            android:layout_marginTop="6dp"
+            android:background="@drawable/bg_reminder_option"
+            android:button="@null"
+            android:gravity="start|center_vertical"
+            android:includeFontPadding="false"
+            android:minHeight="0dp"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:text="@string/reminder_mode_silent"
+            android:textColor="@color/reminder_option_text"
+            android:textSize="15sp" />
+    </RadioGroup>
+</LinearLayout>

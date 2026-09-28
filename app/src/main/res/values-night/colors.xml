@@ -1,13 +1,38 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="brand_green">#44B99A</color>
-    <color name="brand_green_dark">#7ED8BD</color>
-    <color name="selection_accent">#F0A35D</color>
-    <color name="text_primary">#EEF4F1</color>
-    <color name="text_secondary">#B7C3BE</color>
-    <color name="text_tertiary">#8E9D97</color>
-    <color name="surface">#18201D</color>
-    <color name="surface_soft">#101613</color>
-    <color name="divider">#2EFFFFFF</color>
-    <color name="warning">#F0A35D</color>
+    <!-- Foreground drawn on top of brand fills (checked radio, light buttons). -->
+    <color name="on_brand">#FFFFFF</color>
+    <color name="selection_accent">@color/control_accent</color>
+    <!-- Same teal hue family, lifted so it stays readable on dark surfaces. -->
+    <color name="control_accent">#5FBFD6</color>
+    <!-- Slightly brighter step reserved for settings controls. -->
+    <color name="settings_control_accent">#7ED0E4</color>
+    <!-- Brighter accent for accent-coloured small text. -->
+    <color name="control_accent_text">#9ADCEB</color>
+    <!-- Muted grey-cyan for low emphasis affordances such as list chevrons. -->
+    <color name="control_muted">#8E9AA3</color>
+    <!-- Switch accent: lifted teal so the control reads clearly on dark surfaces. -->
+    <color name="option_switch">#5FBFD6</color>
+    <!-- Three dark elevation layers: base, raised surface, nested group. -->
+    <color name="surface_soft">#141618</color>
+    <color name="surface">#1F2126</color>
+    <color name="surface_group">#2A2D33</color>
+    <color name="map_control_surface">#1F2126</color>
+    <color name="map_control_icon">@color/control_accent</color>
+    <!-- 87% white for primary text, with softer levels for secondary copy. -->
+    <color name="text_primary">#DEFFFFFF</color>
+    <color name="text_secondary">#B8FFFFFF</color>
+    <color name="text_tertiary">#8AFFFFFF</color>
+    <color name="divider">#14FFFFFF</color>
+    <!-- Dark mode uses a lifted hairline so cards read as separate layers. -->
+    <color name="card_hairline">#1FFFFFFF</color>
+    <color name="marker_outline">@color/option_switch</color>
+    <color name="center_marker">#E4E8EA</color>
+    <color name="center_marker_inner">#1F2126</color>
+    <color name="location_marker">@color/control_accent</color>
+    <!-- Elevation and spacing carry hierarchy; outlines stay visually silent. -->
+    <color name="accent_outline">#00000000</color>
+    <color name="button_primary">#1E4B78</color>
+    <color name="button_primary_text">#DEFFFFFF</color>
+    <color name="warning">#D8B56B</color>
 </resources>

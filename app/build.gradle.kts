@@ -4,6 +4,15 @@ plugins {
     id("com.android.application")
 }
 
+val versionPropertiesFile = rootProject.file("version.properties")
+val versionProperties = Properties().apply {
+    if (versionPropertiesFile.exists()) {
+        versionPropertiesFile.inputStream().use { load(it) }
+    }
+}
+val appVersionName = versionProperties.getProperty("versionName", "2.0.0")
+val appBuildNumber = versionProperties.getProperty("buildNumber", "4").toInt()
+
 val legalAssetsDir = layout.buildDirectory.dir("generated/legalAssets")
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val keystoreProperties = Properties().apply {
@@ -33,8 +42,9 @@ android {
         applicationId = "com.kqcx.bikemap"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = appBuildNumber
+        versionName = appVersionName
+        buildConfigField("int", "BUILD_NUMBER", appBuildNumber.toString())
     }
 
     signingConfigs {
@@ -50,8 +60,13 @@ android {
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             if (keystorePropertiesFile.exists()) {
                 signingConfig = signingConfigs.getByName("release")
             }
@@ -60,6 +75,12 @@ android {
                 "proguard-rules.pro"
             )
         }
+        // 仅供本地留存的未压缩正式版：包名/签名与 release 相同，不用于发布。
+        create("releasePlain") {
+            initWith(getByName("release"))
+            isMinifyEnabled = false
+            isShrinkResources = false
+        }
     }
 
     compileOptions {
@@ -67,8 +88,43 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     sourceSets {
         getByName("main").assets.srcDir(legalAssetsDir)
+    }
+}
+
+var buildNumberRecorded = false
+
+fun recordNextBuildNumber() {
+    if (buildNumberRecorded || !versionPropertiesFile.exists()) {
+        return
+    }
+    val properties = Properties().apply {
+        versionPropertiesFile.inputStream().use { load(it) }
+    }
+    properties.setProperty("versionName", appVersionName)
+    properties.setProperty("buildNumber", (appBuildNumber + 1).toString())
+    versionPropertiesFile.writeText(
+        "versionName=${properties.getProperty("versionName")}\n" +
+                "buildNumber=${properties.getProperty("buildNumber")}\n"
+    )
+    buildNumberRecorded = true
+}
+
+tasks.matching {
+    it.name in setOf(
+        "assembleDebug",
+        "assembleRelease",
+        "bundleDebug",
+        "bundleRelease"
+    )
+}.configureEach {
+    doLast {
+        recordNextBuildNumber()
     }
 }
 
@@ -76,7 +132,7 @@ dependencies {
     implementation("org.osmdroid:osmdroid-android:6.1.18")
     implementation("androidx.activity:activity:1.10.1")
     implementation("androidx.core:core:1.13.1")
-    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    implementation("com.google.zxing:core:3.4.1")
 }
 
 tasks.named("preBuild").configure {

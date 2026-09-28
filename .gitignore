@@ -35,3 +35,6 @@ secrets.properties
 *.apk
 *.aab
 *.zip
+
+# 受控车辆编号明细：仅本地维护，不进入公开仓库
+docs/developer-data/vehicle-number/江西快趣车辆明细-精确编号.csv
