@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider 暴露范围：只开导出目录一个根。
+     导出内容是按需合成的报告文本，不含坐标与完整车辆编号；文件写在缓存目录，
+     随系统回收，不留长期副本。多开一个根就多一份被别的应用读到的可能。 -->
+<paths>
+    <cache-path
+        name="diagnose-export"
+        path="diagnose-export/" />
+</paths>

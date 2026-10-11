@@ -22,7 +22,6 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.SystemClock;
-import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
@@ -42,6 +41,11 @@ public final class VehicleAlertService extends Service {
     static final String PREFS = "app_settings";
     static final String PREF_ENABLED = "vehicle_alert_enabled";
     static final String PREF_INTERVAL_SECONDS = "vehicle_alert_interval_seconds";
+    /**
+     * 与设置里的「自动过滤不可用车辆」共用同一个开关；键值与
+     * {@code MainActivity.PREF_FILTER_UNAVAILABLE} 保持一致。
+     */
+    static final String PREF_FILTER_UNAVAILABLE = "filter_unavailable";
     static final int DEFAULT_INTERVAL_SECONDS = 60;
     static final int[] INTERVALS_SECONDS = {10, 30, 60, 180, 300};
 
@@ -73,6 +77,8 @@ public final class VehicleAlertService extends Service {
     private BikeRepository repository;
     private LocationManager locationManager;
     private boolean checkInFlight;
+    /** 已排期的下一次检查，用于避免重复 start 把检查间隔重置。 */
+    private boolean checkScheduled;
     private boolean warningActive;
     private long lastWarningAtMs;
 
@@ -169,7 +175,7 @@ public final class VehicleAlertService extends Service {
                 startForeground(ONGOING_ID, notification);
             }
         } catch (RuntimeException exception) {
-            Log.w(TAG, "Vehicle alert could not become foreground", exception);
+            DiagnosticLog.warn(TAG, "Vehicle alert could not become foreground", exception);
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -177,7 +183,7 @@ public final class VehicleAlertService extends Service {
             if (!checkInFlight) {
                 runCheck();
             }
-        } else if (!checkInFlight) {
+        } else if (!checkInFlight && !checkScheduled) {
             scheduleNext(FIRST_CHECK_DELAY_MS);
         }
         return START_STICKY;
@@ -192,6 +198,7 @@ public final class VehicleAlertService extends Service {
     @Override
     public void onDestroy() {
         handler.removeCallbacks(checkRunnable);
+        checkScheduled = false;
         cancelBackstop();
         cancelLocationRequest();
         if (repository != null) {
@@ -205,6 +212,7 @@ public final class VehicleAlertService extends Service {
         handler.removeCallbacks(checkRunnable);
         long safeDelay = Math.max(1_000L, delayMs);
         handler.postDelayed(checkRunnable, safeDelay);
+        checkScheduled = true;
         scheduleBackstop(safeDelay + BACKSTOP_MARGIN_MS);
     }
 
@@ -242,7 +250,7 @@ public final class VehicleAlertService extends Service {
                 );
             }
         } catch (RuntimeException exception) {
-            Log.w(TAG, "Vehicle alert backstop alarm unavailable", exception);
+            DiagnosticLog.warn(TAG, "Vehicle alert backstop alarm unavailable", exception);
             operation.cancel();
         }
     }
@@ -267,6 +275,7 @@ public final class VehicleAlertService extends Service {
     }
 
     private void runCheck() {
+        checkScheduled = false;
         if (!isEnabled(this)
                 || !isTimerRunning(this)
                 || !hasNotificationAccess(this)) {
@@ -280,7 +289,7 @@ public final class VehicleAlertService extends Service {
         checkInFlight = true;
         requestLocation(location -> {
             if (location == null) {
-                Log.w(TAG, "Vehicle alert check skipped: no location fix");
+                DiagnosticLog.warn(TAG, "Vehicle alert check skipped: no location fix");
                 finishCheck();
                 return;
             }
@@ -302,7 +311,7 @@ public final class VehicleAlertService extends Service {
 
                         @Override
                         public void onError(String message) {
-                            Log.w(TAG, "Vehicle alert query failed: " + message);
+                            DiagnosticLog.warn(TAG, "Vehicle alert query failed: " + message);
                             finishCheck();
                         }
                     }
@@ -320,22 +329,35 @@ public final class VehicleAlertService extends Service {
     }
 
     private void evaluate(List<Bike> bikes, float locationAccuracy) {
-        int count = bikes == null ? 0 : bikes.size();
+        // 预警文案说的是“附近可用车辆”，所以这里和地图、列表用同一个过滤开关，
+        // 避免把维修、停用或低电量的车算进“可用”。
+        boolean filterUnavailable = preferences(this)
+                .getBoolean(PREF_FILTER_UNAVAILABLE, true);
+        int count = 0;
         float nearest = Float.MAX_VALUE;
         if (bikes != null) {
             for (Bike bike : bikes) {
+                if (filterUnavailable && !bike.available) {
+                    continue;
+                }
+                count++;
                 if (bike.locationKnown && bike.distanceMeters < nearest) {
                     nearest = bike.distanceMeters;
                 }
             }
         }
+        DiagnosticLog.detail(TAG, "check count=" + count
+                + " nearest=" + (nearest == Float.MAX_VALUE ? "n/a" : Math.round(nearest))
+                + " acc=" + Math.round(Float.isNaN(locationAccuracy) ? 0f : locationAccuracy));
         if (count <= LOW_VEHICLE_COUNT) {
+            DiagnosticLog.event(TAG, "alert few count=" + count);
             warn(getString(R.string.vehicle_alert_warning_few, count));
             return;
         }
         if (nearest == Float.MAX_VALUE) {
             // Every listed vehicle is missing a position, so nothing can be
             // measured; say so instead of printing an absurd distance.
+            DiagnosticLog.event(TAG, "alert position-unknown");
             warn(getString(R.string.vehicle_alert_warning_unknown));
             return;
         }
@@ -343,6 +365,7 @@ public final class VehicleAlertService extends Service {
         // 否则几十到上百米的定位误差会把 100 多米误报成 300 米。
         float accuracy = Float.isNaN(locationAccuracy) ? 0f : Math.max(0f, locationAccuracy);
         if (nearest - accuracy > FAR_DISTANCE_METERS) {
+            DiagnosticLog.event(TAG, "alert far");
             warn(getString(
                     R.string.vehicle_alert_warning_far,
                     Math.round(nearest)
@@ -445,7 +468,7 @@ public final class VehicleAlertService extends Service {
             };
             handler.postDelayed(activeTimeout, FIX_TIMEOUT_MS);
         } catch (RuntimeException exception) {
-            Log.w(TAG, "Location request unavailable", exception);
+            DiagnosticLog.warn(TAG, "Location request unavailable", exception);
             callback.onLocation(lastKnown);
         }
     }

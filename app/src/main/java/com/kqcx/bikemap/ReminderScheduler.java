@@ -15,7 +15,6 @@ import android.media.AudioAttributes;
 import android.os.Build;
 import android.os.PowerManager;
 import android.provider.Settings;
-import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
@@ -59,13 +58,13 @@ final class ReminderScheduler {
             return false;
         }
         if (!canScheduleExactAlarms(context)) {
-            Log.w(TAG, "Exact alarm permission unavailable; reminder not scheduled");
+            DiagnosticLog.warn(TAG, "Exact alarm permission unavailable; reminder not scheduled");
             return false;
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
                 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED) {
-            Log.w(TAG, "Notification permission unavailable; reminder not scheduled");
+            DiagnosticLog.warn(TAG, "Notification permission unavailable; reminder not scheduled");
             return false;
         }
 
@@ -95,10 +94,10 @@ final class ReminderScheduler {
                     operation
             );
         } catch (SecurityException exception) {
-            Log.e(TAG, "Exact alarm permission was revoked", exception);
+            DiagnosticLog.error(TAG, "Exact alarm permission was revoked", exception);
             return false;
         }
-        Log.i(TAG, "Reminder alarm clock scheduled at " + triggerAt);
+        DiagnosticLog.event(TAG, "Reminder alarm clock scheduled at " + triggerAt);
 
         preferences(context)
                 .edit()
@@ -110,7 +109,7 @@ final class ReminderScheduler {
         try {
             ReminderForegroundService.start(context);
         } catch (Exception exception) {
-            Log.w(TAG, "Reminder foreground service could not start", exception);
+            DiagnosticLog.warn(TAG, "Reminder foreground service could not start", exception);
         }
         return true;
     }
@@ -132,23 +131,6 @@ final class ReminderScheduler {
         ReminderForegroundService.stop(context);
     }
 
-    /**
-     * Time at which the reminder must alert the user. Both the foreground
-     * service timer and the exact alarm aim at this moment.
-     */
-    static long alertTriggerAt(Context context) {
-        long endAt = scheduledEndAt(context);
-        if (endAt <= 0L) {
-            return 0L;
-        }
-        return endAt - scheduledLeadMinutes(context) * 60_000L;
-    }
-
-    /**
-     * Single entry point for firing a reminder. The foreground service timer and
-     * the exact alarm both call it, and only the first call for a given schedule
-     * actually alerts, so the user never sees a duplicate.
-     */
     /** Allows the alert to fire again for the same schedule after an update. */
     static void resetAlertDelivered(Context context) {
         context.getSharedPreferences(PREFS_ALERT_STATE, Context.MODE_PRIVATE)
@@ -157,6 +139,11 @@ final class ReminderScheduler {
                 .apply();
     }
 
+    /**
+     * Single entry point for firing a reminder. The exact alarm is the only
+     * trigger; the delivery guard still protects against a replayed broadcast
+     * or a manual retry for the same schedule.
+     */
     static synchronized void deliverAlert(
             Context context,
             int leadMinutes,
@@ -171,15 +158,19 @@ final class ReminderScheduler {
                 Context.MODE_PRIVATE
         );
         if (alertState.getLong(PREF_ALERTED_END_AT, -1L) == endAt) {
+            DiagnosticLog.detail(TAG, "alert already delivered for this schedule");
             return;
         }
+        DiagnosticLog.event(TAG, "deliver lead=" + leadMinutes
+                + " mode=" + normalizeAlertMode(alertMode));
         if (!showNotification(context, leadMinutes, alertMode)) {
             // 通知不可用时保留提醒状态，用户下次打开应用后仍可重新投递，
             // 避免直接把本次提醒标记为已送达。
-            Log.w(TAG, "Reminder alert not delivered; keeping schedule for retry");
+            DiagnosticLog.warn(TAG, "Reminder alert not delivered; keeping schedule for retry");
             return;
         }
         alertState.edit().putLong(PREF_ALERTED_END_AT, endAt).apply();
+        DiagnosticLog.event(TAG, "delivered");
         showAlertScreen(context, leadMinutes, alertMode);
         clearTriggeredState(context);
     }
@@ -201,7 +192,7 @@ final class ReminderScheduler {
         if (!scheduled) {
             // 权限被撤销时保留活动提醒状态，用户重新进入提醒页后
             // 会再次检测并引导授权，而不是静默清掉已设置的提醒。
-            Log.w(TAG, "Active reminder kept for permission recovery");
+            DiagnosticLog.warn(TAG, "Active reminder kept for permission recovery");
         }
         return scheduled;
     }
@@ -259,18 +250,18 @@ final class ReminderScheduler {
         NotificationManagerCompat manager = NotificationManagerCompat.from(context);
         boolean notificationsEnabled = manager.areNotificationsEnabled();
         if (!notificationsGranted) {
-            Log.w(TAG, "Reminder alert skipped: notification permission missing");
+            DiagnosticLog.warn(TAG, "Reminder alert skipped: notification permission missing");
             return false;
         }
         if (!notificationsEnabled) {
-            Log.w(TAG, "Reminder alert skipped: notifications disabled for this app");
+            DiagnosticLog.warn(TAG, "Reminder alert skipped: notifications disabled for this app");
             return false;
         }
         ensureNotificationChannels(context);
         String mode = normalizeAlertMode(alertMode);
         NotificationChannel channel = alertChannel(context, mode);
         if (channel == null || channel.getImportance() == NotificationManager.IMPORTANCE_NONE) {
-            Log.w(TAG, "Reminder alert skipped: alert channel disabled");
+            DiagnosticLog.warn(TAG, "Reminder alert skipped: alert channel disabled");
             return false;
         }
 
@@ -298,10 +289,10 @@ final class ReminderScheduler {
                 .setShowWhen(true);
         try {
             manager.notify(NOTIFICATION_ID, builder.build());
-            Log.i(TAG, "Reminder notification posted, mode=" + mode);
+            DiagnosticLog.event(TAG, "Reminder notification posted, mode=" + mode);
             return true;
         } catch (RuntimeException exception) {
-            Log.e(TAG, "Reminder notification failed", exception);
+            DiagnosticLog.error(TAG, "Reminder notification failed", exception);
             return false;
         }
     }
@@ -313,7 +304,7 @@ final class ReminderScheduler {
         if (isLockedOrScreenOff(context)) {
             // Locked or screen off: the notification alone is the alert, so no
             // prompt pops up abruptly once the user unlocks.
-            Log.i(TAG, "Reminder alert screen skipped: locked or screen off");
+            DiagnosticLog.event(TAG, "Reminder alert screen skipped: locked or screen off");
             return;
         }
         // 只在应用前台时用应用内小方块提示；后台/其它界面一律只留系统通知，
@@ -321,11 +312,11 @@ final class ReminderScheduler {
         MainActivity activity = MainActivity.foregroundInstance();
 
         if (activity == null) {
-            Log.i(TAG, "Reminder alert square skipped: app not in foreground");
+            DiagnosticLog.event(TAG, "Reminder alert square skipped: app not in foreground");
             return;
         }
         activity.showReminderAlertSquare(leadMinutes);
-        Log.i(TAG, "Reminder alert square requested in app");
+        DiagnosticLog.event(TAG, "Reminder alert square requested in app");
     }
 
 

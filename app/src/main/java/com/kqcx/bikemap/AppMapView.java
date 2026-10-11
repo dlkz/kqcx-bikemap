@@ -29,6 +29,12 @@ public final class AppMapView extends MapView {
         void onSingleTapConfirmed();
 
         void onTripleTap(double zoomLevelBeforeSequence, IGeoPoint centerBeforeSequence);
+
+        /**
+         * 用户手指按下地图。调用方可以据此取消会“抢回镜头”的延迟动作，
+         * 避免用户在定位动画后自己拖动地图时被重新拽回定位点。
+         */
+        void onUserGestureStart();
     }
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -93,6 +99,9 @@ public final class AppMapView extends MapView {
         long now = SystemClock.uptimeMillis();
 
         if (action == MotionEvent.ACTION_DOWN) {
+            if (gestureListener != null) {
+                gestureListener.onUserGestureStart();
+            }
             boolean previousTapExpired =
                     now - lastTapUpAt > MULTI_TAP_TIMEOUT_MS;
             if (tapCount == 0 || previousTapExpired) {

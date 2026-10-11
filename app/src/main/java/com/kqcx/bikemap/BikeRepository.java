@@ -32,12 +32,25 @@ import java.util.concurrent.Executors;
 public final class BikeRepository {
     private static final String API_URL =
             "https://api.kvcoogo.com/ManagerApi/api/v1.0.0/queryNearbyCar";
+    /**
+     * 按完整车号点名查一辆车。附近列表里没有目标车时的兜底，与官方扫码后
+     * loadOneCar 同款；坐标只是查询上下文，接口不需要凭证，与附近查询同口径。
+     */
+    private static final String ONE_CAR_URL =
+            "https://api.kvcoogo.com/ManagerApi/api/v2.0.0/queryOneCar";
     private static final DateTimeFormatter LAST_UPLOAD_FORMAT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final ZoneId SERVICE_ZONE = ZoneId.of("Asia/Shanghai");
 
     public interface Callback {
         void onSuccess(List<Bike> bikes, long fetchedAt);
+
+        void onError(String message);
+    }
+
+    /** 按编号点名查单辆车的回调；查不到这辆车时 bike 为 null。 */
+    public interface BikeCallback {
+        void onSuccess(Bike bike);
 
         void onError(String message);
     }
@@ -77,6 +90,34 @@ public final class BikeRepository {
         });
     }
 
+    /**
+     * 按完整车号点名查询一辆车。与附近查询共用同一个单线程 executor，避免两条
+     * 请求链路上的连接互相干扰；查不到（车号不存在 / 坐标无效）按正常结果回调
+     * null，只有网络或服务故障才走 onError。
+     */
+    public void queryOneCar(
+            String carNum,
+            double centerLatitude,
+            double centerLongitude,
+            BikeCallback callback
+    ) {
+        executor.execute(() -> {
+            try {
+                String response = executePost(
+                        ONE_CAR_URL,
+                        "carNum=" + carNum
+                                + "&lat=" + centerLatitude
+                                + "&lng=" + centerLongitude
+                );
+                Bike bike = parseOneCar(response, centerLatitude, centerLongitude);
+                mainHandler.post(() -> callback.onSuccess(bike));
+            } catch (Exception exception) {
+                String finalMessage = toUserMessage(exception);
+                mainHandler.post(() -> callback.onError(finalMessage));
+            }
+        });
+    }
+
     public void shutdown() {
         executor.shutdownNow();
     }
@@ -87,9 +128,18 @@ public final class BikeRepository {
     }
 
     private String executeRequest(double centerLatitude, double centerLongitude) throws Exception {
+        return executePost(
+                API_URL,
+                "lat=" + centerLatitude
+                        + "&lng=" + centerLongitude
+                        + "&deviceType=1"
+        );
+    }
+
+    private String executePost(String url, String body) throws Exception {
         HttpURLConnection connection = null;
         try {
-            connection = (HttpURLConnection) new URL(API_URL).openConnection();
+            connection = (HttpURLConnection) new URL(url).openConnection();
             connection.setRequestMethod("POST");
             connection.setConnectTimeout(10_000);
             connection.setReadTimeout(15_000);
@@ -100,9 +150,6 @@ public final class BikeRepository {
             );
             connection.setRequestProperty("User-Agent", "BikeMap/" + BuildConfig.VERSION_NAME);
 
-            String body = "lat=" + centerLatitude
-                    + "&lng=" + centerLongitude
-                    + "&deviceType=1";
             try (OutputStream output = connection.getOutputStream()) {
                 output.write(body.getBytes(StandardCharsets.UTF_8));
             }
@@ -123,17 +170,39 @@ public final class BikeRepository {
         }
     }
 
+    /**
+     * 解析「按车号查单车」的响应。信封返回业务错误（errorCode 非 0）时抛出带
+     * 服务端 resultMsg 的 ServiceException，让上层给出更具体的提示；信封成功但
+     * 解析不出车返回 null，调用方把“查不到”当正常结果提示。成品对象的字段口径与
+     * 附近列表同源，但缺字段的假设更宽松（见
+     * {@link #parseBike(JSONObject, double, double, boolean)}）。
+     */
+    private Bike parseOneCar(
+            String response,
+            double centerLatitude,
+            double centerLongitude
+    ) throws Exception {
+        JSONObject root = new JSONObject(response);
+        throwIfEnvelopeError(root);
+        JSONObject car = root.optJSONObject("result");
+        if (car == null) {
+            JSONArray list = root.optJSONArray("result");
+            if (list != null && list.length() > 0) {
+                car = list.optJSONObject(0);
+            }
+        }
+        return car == null
+                ? null
+                : parseBike(car, centerLatitude, centerLongitude, true);
+    }
+
     private List<Bike> parseBikes(
             String response,
             double centerLatitude,
             double centerLongitude
     ) throws Exception {
         JSONObject root = new JSONObject(response);
-        if (root.optInt("errorCode", -1) != 0) {
-            throw new ServiceException(safeServiceMessage(
-                    root.optString("resultMsg", "")
-            ));
-        }
+        throwIfEnvelopeError(root);
 
         JSONObject result = root.optJSONObject("result");
         JSONArray carList = result == null ? null : result.optJSONArray("carList");
@@ -156,10 +225,38 @@ public final class BikeRepository {
         return bikes;
     }
 
+    /**
+     * 统一校验接口信封。errorCode 非 0 表示服务端业务错误，抛出带 resultMsg 的
+     * ServiceException；resultMsg 缺失或不安全时由 {@link #safeServiceMessage}
+     * 回落为通用服务提示。
+     */
+    private void throwIfEnvelopeError(JSONObject root) throws ServiceException {
+        if (root.optInt("errorCode", -1) == 0) {
+            return;
+        }
+        throw new ServiceException(safeServiceMessage(
+                root.optString("resultMsg", "")
+        ));
+    }
+
     private Bike parseBike(
             JSONObject car,
             double centerLatitude,
             double centerLongitude
+    ) {
+        return parseBike(car, centerLatitude, centerLongitude, false);
+    }
+
+    /**
+     * @param lenientStatus 附近列表一次拿一批、坏了丢一条，在线/启用字段缺失按坏数
+     *                      据处理；按编号点名查的详情接口只确认过 carNum/lat/lng/
+     *                      currentPercent，缺字段时不该把一辆真车标成失联。
+     */
+    private Bike parseBike(
+            JSONObject car,
+            double centerLatitude,
+            double centerLongitude,
+            boolean lenientStatus
     ) {
         String number = VehicleNumberCatalog.normalize(car.optString("carNum", ""));
         double latitude = car.optDouble("lat", Double.NaN);
@@ -175,9 +272,15 @@ public final class BikeRepository {
                 car.optString("lastUploadTime", "")
         );
         double lowBattery = car.optDouble("lowBattery", Double.NaN);
-        boolean online = car.optInt("onlineStatus", 0) == 1;
-        boolean enabled = car.optInt("status", 0) == 1;
-        boolean enoughBattery = Double.isNaN(lowBattery) || battery > lowBattery;
+        boolean online = car.has("onlineStatus")
+                ? car.optInt("onlineStatus", 0) == 1
+                : lenientStatus;
+        boolean enabled = car.has("status")
+                ? car.optInt("status", 0) == 1
+                : lenientStatus;
+        boolean enoughBattery = Double.isNaN(lowBattery)
+                || (lenientStatus && battery <= 0)
+                || battery > lowBattery;
         boolean available = online && enabled && enoughBattery;
 
         int statusRes;
@@ -204,7 +307,7 @@ public final class BikeRepository {
                 battery,
                 statusRes,
                 car.optString("carTypeName", ""),
-                car.optString("servicesiteName", "").trim(),
+                correctSiteName(car.optString("servicesiteName", "").trim()),
                 correctSiteName(car.optString("givecarName", "").trim()),
                 distance,
                 available,
@@ -325,11 +428,18 @@ public final class BikeRepository {
      * typos that make a building impossible to recognise, so the known ones are
      * normalised here instead of showing the raw vendor value.
      */
-    private static String correctSiteName(String value) {
+    static String correctSiteName(String value) {
         if (value == null || value.isEmpty()) {
             return "";
         }
         String corrected = value;
+        corrected = corrected.replace("南昌工程学院", "江西水利电力大学");
+        // 服务对站点 67 用简称“江西师大”，与内置目录的“江西师范大学”对齐；
+        // 必须整串匹配，否则会误伤已经带“大学”的全称。
+        if (corrected.equals("江西师大")) {
+            corrected = "江西师范大学";
+        }
+        corrected = corrected.replace("挤名楼", "济民楼");
         corrected = corrected.replace("挤民楼", "济民楼");
         corrected = corrected.replace("先啸楼", "先骕楼");
         return corrected;

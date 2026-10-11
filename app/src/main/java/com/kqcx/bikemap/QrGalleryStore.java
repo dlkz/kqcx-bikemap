@@ -9,7 +9,6 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.MediaStore;
-import android.util.Log;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -194,7 +193,7 @@ final class QrGalleryStore {
                         deleteSelection,
                         deleteArgs
                 );
-                Log.i(
+                DiagnosticLog.event(
                         "BikeMapQrDelete",
                         "delete uri=" + pending.uri + " rows=" + deleted
                 );
@@ -202,7 +201,7 @@ final class QrGalleryStore {
                     throw new IOException("MediaStore 未完成永久删除");
                 }
             } else {
-                Log.i("BikeMapQrDelete", "row already absent uri=" + pending.uri);
+                DiagnosticLog.event("BikeMapQrDelete", "row already absent uri=" + pending.uri);
             }
 
             String dataPath = verification.dataPath != null
@@ -214,7 +213,7 @@ final class QrGalleryStore {
             removePendingQr(pending.uri);
             return true;
         } catch (Exception exception) {
-            Log.w("BikeMapQrDelete", "Refused or failed to delete QR image", exception);
+            DiagnosticLog.warn("BikeMapQrDelete", "refused or failed to delete QR image", exception);
             return false;
         }
     }

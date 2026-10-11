@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.os.PowerManager;
-import android.util.Log;
 
 public final class ReminderReceiver extends BroadcastReceiver {
     private static final String TAG = "ReminderReceiver";
@@ -14,7 +13,7 @@ public final class ReminderReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        Log.i(TAG, "Reminder alarm fired");
+        DiagnosticLog.event(TAG, "alarm fired");
         holdCpuBriefly(context);
 
         int leadMinutes = intent.getIntExtra(
@@ -25,7 +24,7 @@ public final class ReminderReceiver extends BroadcastReceiver {
         try {
             ReminderScheduler.deliverAlert(context, leadMinutes, alertMode);
         } catch (RuntimeException exception) {
-            Log.e(TAG, "Reminder alert failed", exception);
+            DiagnosticLog.error(TAG, "alert failed", exception);
         }
     }
 
@@ -46,7 +45,7 @@ public final class ReminderReceiver extends BroadcastReceiver {
             );
             wakeLock.acquire(15_000L);
         } catch (RuntimeException exception) {
-            Log.w(TAG, "Reminder wake lock unavailable", exception);
+            DiagnosticLog.warn(TAG, "wake lock unavailable", exception);
         }
     }
 }
