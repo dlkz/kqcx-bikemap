@@ -119,6 +119,7 @@
     <string name="number_range_series_title">选择编号号段</string>
     <string name="input_number_not_found">当前校园和号段中未找到这个编号</string>
     <string name="input_number_incomplete">请输入 3–4 位尾号或完整 9 位编号</string>
+    <string name="number_catalog_loading">编号目录加载中，请稍候</string>
     <string name="input_number_direct_title">完整编号查询</string>
     <string name="input_number_direct_desc">目录外编号也可直接查询车辆位置</string>
     <string name="input_number_candidates">找到 %1$d 个匹配编号，点击选择</string>
@@ -163,6 +164,7 @@
     <string name="settings_storage">存储</string>
     <string name="settings_clear_map_cache">清除地图缓存</string>
     <string name="map_cache_empty">无缓存</string>
+    <string name="map_cache_calculating">计算中…</string>
     <string name="map_cache_clear_title">清除地图缓存</string>
     <string name="map_cache_clear_message">当前占用 %1$s。清除后再次浏览地图需重新下载瓦片；不影响定位、二维码、提醒和其他设置。</string>
     <string name="map_cache_cleared">地图缓存已清除，释放 %1$s</string>
@@ -171,6 +173,8 @@
     <string name="settings_advanced_enable">启用高级设置</string>
     <string name="settings_advanced_options">高级选项</string>
     <string name="settings_vehicle_alert">车辆预警</string>
+    <string name="vehicle_alert_paused_location">已暂停：缺少精确位置权限</string>
+    <string name="vehicle_alert_paused_notification">已暂停：通知权限不可用</string>
     <string name="vehicle_alert_interval_title">车辆预警（检测间隔）</string>
     <string name="vehicle_alert_interval_10">10 秒</string>
     <string name="vehicle_alert_interval_30">30 秒</string>
@@ -182,18 +186,18 @@
     <string name="vehicle_alert_channel_ongoing">车辆预警运行中</string>
     <string name="vehicle_alert_channel_ongoing_description">保持车辆预警在后台定时检测</string>
     <string name="vehicle_alert_channel_warning">车辆预警提醒</string>
-    <string name="vehicle_alert_channel_warning_description">附近车辆过少或距离过远时提醒</string>
+    <string name="vehicle_alert_channel_warning_description">附近可用车辆少于 3 辆时提醒</string>
     <string name="vehicle_alert_warning_title">车辆预警</string>
-    <string name="vehicle_alert_warning_few">附近可用车辆仅剩 %1$d 辆</string>
+    <string name="vehicle_alert_warning_few">100 米内可用车辆仅剩 %1$d 辆</string>
+    <string name="vehicle_alert_warning_empty">100 米内暂无可用车辆</string>
     <string name="vehicle_alert_start_failed">车辆预警启动失败，请检查定位权限</string>
+    <string name="vehicle_alert_precise_location_message">车辆预警需要精确位置才能判断 100 米内的可用车辆数量。请在系统权限中选择“精确位置”。</string>
     <string name="vehicle_alert_timer_on">开启计时</string>
     <string name="vehicle_alert_timer_off">关闭计时</string>
     <string name="vehicle_alert_timer_update">更新计时</string>
     <string name="vehicle_alert_timer_started">车辆预警计时已开启</string>
     <string name="vehicle_alert_timer_updated">车辆预警计时已更新</string>
     <string name="vehicle_alert_timer_stopped">车辆预警计时已关闭</string>
-    <string name="vehicle_alert_warning_far">最近可用车辆距离约 %1$d 米</string>
-    <string name="vehicle_alert_warning_unknown">附近车辆位置暂不可用</string>
     <string name="vehicle_alert_notification_title">通知权限</string>
     <string name="vehicle_alert_notification_message">车辆预警需要在通知栏保持运行并发送预警通知；请在系统设置中允许单车地图发送通知。</string>
     <string name="vehicle_alert_notification_open">去设置</string>
@@ -257,4 +261,6 @@
     <string name="history_clear">清除记录</string>
     <string name="history_cleared">最近记录已清除</string>
     <string name="history_action">生成并跳转</string>
+    <string name="history_action_complete">补全编号</string>
+    <string name="history_tail_incomplete_hint">请补全 3–4 位尾号或完整编号</string>
 </resources>

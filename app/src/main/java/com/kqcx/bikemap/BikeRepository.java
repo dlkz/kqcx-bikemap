@@ -23,7 +23,6 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -205,9 +204,12 @@ public final class BikeRepository {
         throwIfEnvelopeError(root);
 
         JSONObject result = root.optJSONObject("result");
-        JSONArray carList = result == null ? null : result.optJSONArray("carList");
+        if (result == null) {
+            throw new org.json.JSONException("missing result");
+        }
+        JSONArray carList = result.optJSONArray("carList");
         if (carList == null) {
-            return Collections.emptyList();
+            throw new org.json.JSONException("missing carList");
         }
 
         List<Bike> bikes = new ArrayList<>();
@@ -441,6 +443,7 @@ public final class BikeRepository {
         }
         corrected = corrected.replace("挤名楼", "济民楼");
         corrected = corrected.replace("挤民楼", "济民楼");
+        corrected = corrected.replace("挤明楼", "济民楼");
         corrected = corrected.replace("先啸楼", "先骕楼");
         return corrected;
     }

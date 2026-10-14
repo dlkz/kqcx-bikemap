@@ -308,11 +308,11 @@ final class DiagnosticLog {
         }
         // 仍然同步到 logcat，方便 adb 现场调试。
         Log.println(levelToPriority(level), ANDROID_TAG, tag + ": " + message);
-        StringBuilder line = new StringBuilder();
         synchronized (LOCK) {
             if (logDir == null) {
                 return;
             }
+            StringBuilder line = new StringBuilder();
             File current = new File(logDir, EVENT_FILE);
             if (current.length() > MAX_EVENT_BYTES) {
                 rollEventLog(current);
@@ -320,11 +320,14 @@ final class DiagnosticLog {
             line.append(LINE_TIME.format(new Date()))
                     .append(' ').append(level).append(' ')
                     .append(tag).append(": ").append(message);
+            if (throwable != null) {
+                line.append('\n').append(stackTraceOf(throwable));
+            }
+            appendText(
+                    new File(logDir, EVENT_FILE),
+                    line.append('\n').toString()
+            );
         }
-        if (throwable != null) {
-            line.append('\n').append(stackTraceOf(throwable));
-        }
-        appendText(new File(logDir, EVENT_FILE), line.append('\n').toString());
     }
 
     private static int levelToPriority(String level) {
@@ -363,36 +366,35 @@ final class DiagnosticLog {
     }
 
     private static void writeCrash(Thread thread, Throwable throwable) {
-        if (logDir == null) {
-            return;
-        }
-        if (!logDir.exists() && !logDir.mkdirs()) {
-            return;
-        }
-        String stamp;
         synchronized (LOCK) {
-            stamp = CRASH_TIME.format(new Date());
+            if (logDir == null) {
+                return;
+            }
+            if (!logDir.exists() && !logDir.mkdirs()) {
+                return;
+            }
+            String stamp = CRASH_TIME.format(new Date());
+            File file = new File(logDir, CRASH_PREFIX + stamp + ".txt");
+            StringBuilder content = new StringBuilder();
+            content.append("time: ").append(new Date()).append('\n');
+            content.append("thread: ").append(thread.getName()).append('\n');
+            content.append("app: ").append(BuildConfig.VERSION_NAME)
+                    .append(" (").append(BuildConfig.BUILD_NUMBER).append(")\n");
+            content.append("android: ").append(Build.VERSION.RELEASE)
+                    .append(" (API ").append(Build.VERSION.SDK_INT).append(")\n");
+            content.append("device: ").append(Build.MANUFACTURER)
+                    .append(' ').append(Build.MODEL).append("\n\n");
+            content.append(stackTraceOf(throwable));
+            try (Writer writer = new OutputStreamWriter(
+                    new FileOutputStream(file, false),
+                    StandardCharsets.UTF_8
+            )) {
+                writer.write(content.toString());
+            } catch (IOException ignored) {
+                return;
+            }
+            pruneCrashFiles(file);
         }
-        File file = new File(logDir, CRASH_PREFIX + stamp + ".txt");
-        StringBuilder content = new StringBuilder();
-        content.append("time: ").append(new Date()).append('\n');
-        content.append("thread: ").append(thread.getName()).append('\n');
-        content.append("app: ").append(BuildConfig.VERSION_NAME)
-                .append(" (").append(BuildConfig.BUILD_NUMBER).append(")\n");
-        content.append("android: ").append(Build.VERSION.RELEASE)
-                .append(" (API ").append(Build.VERSION.SDK_INT).append(")\n");
-        content.append("device: ").append(Build.MANUFACTURER)
-                .append(' ').append(Build.MODEL).append("\n\n");
-        content.append(stackTraceOf(throwable));
-        try (Writer writer = new OutputStreamWriter(
-                new FileOutputStream(file, false),
-                StandardCharsets.UTF_8
-        )) {
-            writer.write(content.toString());
-        } catch (IOException ignored) {
-            return;
-        }
-        pruneCrashFiles(file);
     }
 
     private static String stackTraceOf(Throwable throwable) {

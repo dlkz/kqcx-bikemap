@@ -22,18 +22,20 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.service.notification.StatusBarNotification;
 
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 
 import org.osmdroid.util.GeoPoint;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Background vehicle watch: refreshes the nearby list on a user-chosen interval
- * and warns when the list shrinks to five or fewer vehicles, or when the closest
- * vehicle is farther than 150 m away.
+ * and warns when fewer than three available vehicles remain within 100 m.
  */
 public final class VehicleAlertService extends Service {
     private static final String TAG = "VehicleAlertService";
@@ -41,11 +43,6 @@ public final class VehicleAlertService extends Service {
     static final String PREFS = "app_settings";
     static final String PREF_ENABLED = "vehicle_alert_enabled";
     static final String PREF_INTERVAL_SECONDS = "vehicle_alert_interval_seconds";
-    /**
-     * 与设置里的「自动过滤不可用车辆」共用同一个开关；键值与
-     * {@code MainActivity.PREF_FILTER_UNAVAILABLE} 保持一致。
-     */
-    static final String PREF_FILTER_UNAVAILABLE = "filter_unavailable";
     static final int DEFAULT_INTERVAL_SECONDS = 60;
     static final int[] INTERVALS_SECONDS = {10, 30, 60, 180, 300};
 
@@ -59,28 +56,46 @@ public final class VehicleAlertService extends Service {
             "com.kqcx.bikemap.action.VEHICLE_ALERT_CHECK";
     private static final long BACKSTOP_MARGIN_MS = 5_000L;
 
-    private static final int LOW_VEHICLE_COUNT = 5;
-    private static final float FAR_DISTANCE_METERS = 150f;
+    private static final float LOW_STOCK_RADIUS_METERS = 100f;
+    private static final int LOW_STOCK_THRESHOLD = 3;
+    private static final int LOW_STOCK_RECOVERY_COUNT = 4;
+    private static final int MAX_NEARBY_RESULTS = 20;
+    private static final float SUPPLEMENTAL_QUERY_OFFSET_METERS = 75f;
+    private static final float SUPPLEMENTAL_CACHE_RADIUS_METERS = 25f;
+    private static final long SUPPLEMENTAL_QUERY_MIN_INTERVAL_MS = 60_000L;
     private static final long FIRST_CHECK_DELAY_MS = 1_500L;
-    private static final long WARNING_COOLDOWN_MS = 5L * 60L * 1000L;
+    private static final long MIN_NOTIFICATION_INTERVAL_MS = 15_000L;
+    private static final long WARNING_COOLDOWN_MS = 60_000L;
     private static final long FIX_TIMEOUT_MS = 8_000L;
     /**
-     * 距离判定只接受这个时限内的定位：陈旧的“最近已知位置”会让距离偏出几百米，
-     * 从而出现“附近明明有车却提示最近车辆 300 米”的误报。
+     * 低库存统计只接受这个时限内的定位：陈旧位置会让 100 米边界和车辆数量
+     * 明显偏移，从而产生误报或漏报。
      */
     private static final long MAX_FIX_AGE_MS = 60_000L;
-    /** 精度差于此值的位置不用于距离判定（阈值是 150 米）。 */
-    private static final float MAX_FIX_ACCURACY_METERS = 100f;
+    /** 精度差于此值的位置不用于低库存统计（预警半径是 100 米）。 */
+    private static final float MAX_FIX_ACCURACY_METERS = 50f;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable checkRunnable = this::runCheck;
+    private final Map<String, Bike> supplementalBikes = new LinkedHashMap<>();
     private BikeRepository repository;
     private LocationManager locationManager;
     private boolean checkInFlight;
     /** 已排期的下一次检查，用于避免重复 start 把检查间隔重置。 */
     private boolean checkScheduled;
-    private boolean warningActive;
-    private long lastWarningAtMs;
+    private AlertState alertState = AlertState.NORMAL;
+    private AlertState lastNotifiedState;
+    private String lastNotificationMessage;
+    private long lastNotificationAtMs;
+    private GeoPoint lastSupplementalQueryPoint;
+    private VehicleStats lastSupplementalStats;
+    private long lastSupplementalQueryAtMs;
+
+    private enum AlertState {
+        NORMAL,
+        LOW,
+        EMPTY
+    }
 
     /** 功能开关：只由高级设置里的「车辆预警」开关决定。 */
     static boolean isEnabled(Context context) {
@@ -299,14 +314,19 @@ public final class VehicleAlertService extends Service {
                     location.getLatitude(),
                     location.getLongitude()
             );
+            float locationAccuracy = location.getAccuracy();
             repository.fetchNearby(
                     queryPoint.getLatitude(),
                     queryPoint.getLongitude(),
                     new BikeRepository.Callback() {
                         @Override
                         public void onSuccess(List<Bike> bikes, long fetchedAt) {
-                            evaluate(bikes, location.getAccuracy());
-                            finishCheck();
+                            evaluateNearby(
+                                    bikes,
+                                    queryPoint,
+                                    locationAccuracy,
+                                    VehicleAlertService.this::finishCheck
+                            );
                         }
 
                         @Override
@@ -328,68 +348,185 @@ public final class VehicleAlertService extends Service {
         scheduleNext(intervalSeconds(this) * 1000L);
     }
 
-    private void evaluate(List<Bike> bikes, float locationAccuracy) {
-        // 预警文案说的是“附近可用车辆”，所以这里和地图、列表用同一个过滤开关，
-        // 避免把维修、停用或低电量的车算进“可用”。
-        boolean filterUnavailable = preferences(this)
-                .getBoolean(PREF_FILTER_UNAVAILABLE, true);
-        int count = 0;
-        float nearest = Float.MAX_VALUE;
-        if (bikes != null) {
-            for (Bike bike : bikes) {
-                if (filterUnavailable && !bike.available) {
-                    continue;
-                }
-                count++;
-                if (bike.locationKnown && bike.distanceMeters < nearest) {
-                    nearest = bike.distanceMeters;
-                }
+    private void evaluateNearby(
+            List<Bike> bikes,
+            GeoPoint queryPoint,
+            float locationAccuracy,
+            Runnable onComplete
+    ) {
+        float accuracy = Float.isNaN(locationAccuracy)
+                ? Float.MAX_VALUE
+                : Math.max(0f, locationAccuracy);
+        if (accuracy > MAX_FIX_ACCURACY_METERS) {
+            DiagnosticLog.detail(TAG, "check deferred accuracy=" + Math.round(accuracy));
+            onComplete.run();
+            return;
+        }
+
+        VehicleStats stats = statsFor(bikes, queryPoint);
+        logStats("check", bikes == null ? 0 : bikes.size(), stats, accuracy);
+        if (bikes != null
+                && bikes.size() >= MAX_NEARBY_RESULTS
+                && stats.nearbyAvailableCount < LOW_STOCK_THRESHOLD) {
+            long now = SystemClock.elapsedRealtime();
+            if (lastSupplementalStats != null
+                    && lastSupplementalQueryPoint != null
+                    && now - lastSupplementalQueryAtMs
+                    < SUPPLEMENTAL_QUERY_MIN_INTERVAL_MS
+                    && distanceMeters(lastSupplementalQueryPoint, queryPoint)
+                    <= SUPPLEMENTAL_CACHE_RADIUS_METERS) {
+                logStats("check cached", bikes.size(), lastSupplementalStats, accuracy);
+                applyAlertState(lastSupplementalStats);
+                onComplete.run();
+                return;
             }
-        }
-        DiagnosticLog.detail(TAG, "check count=" + count
-                + " nearest=" + (nearest == Float.MAX_VALUE ? "n/a" : Math.round(nearest))
-                + " acc=" + Math.round(Float.isNaN(locationAccuracy) ? 0f : locationAccuracy));
-        if (count <= LOW_VEHICLE_COUNT) {
-            DiagnosticLog.event(TAG, "alert few count=" + count);
-            warn(getString(R.string.vehicle_alert_warning_few, count));
+            DiagnosticLog.detail(TAG, "check full result; supplemental query required");
+            fetchSupplementalNearby(
+                    bikes,
+                    queryPoint,
+                    () -> {
+                        VehicleStats mergedStats = statsFor(
+                                supplementalBikes.values(),
+                                queryPoint
+                        );
+                        logStats(
+                                "check merged",
+                                supplementalBikes.size(),
+                                mergedStats,
+                                accuracy
+                        );
+                        lastSupplementalQueryPoint = new GeoPoint(
+                                queryPoint.getLatitude(),
+                                queryPoint.getLongitude()
+                        );
+                        lastSupplementalStats = mergedStats;
+                        lastSupplementalQueryAtMs = SystemClock.elapsedRealtime();
+                        applyAlertState(mergedStats);
+                        onComplete.run();
+                    },
+                    onComplete
+            );
             return;
         }
-        if (nearest == Float.MAX_VALUE) {
-            // Every listed vehicle is missing a position, so nothing can be
-            // measured; say so instead of printing an absurd distance.
-            DiagnosticLog.event(TAG, "alert position-unknown");
-            warn(getString(R.string.vehicle_alert_warning_unknown));
-            return;
-        }
-        // 只有“最近距离减去本次定位误差”后仍超过阈值，才认为确实偏远；
-        // 否则几十到上百米的定位误差会把 100 多米误报成 300 米。
-        float accuracy = Float.isNaN(locationAccuracy) ? 0f : Math.max(0f, locationAccuracy);
-        if (nearest - accuracy > FAR_DISTANCE_METERS) {
-            DiagnosticLog.event(TAG, "alert far");
-            warn(getString(
-                    R.string.vehicle_alert_warning_far,
-                    Math.round(nearest)
-            ));
-            return;
-        }
-        warningActive = false;
+
+        applyAlertState(stats);
+        onComplete.run();
     }
 
-    private void warn(String message) {
+    private void applyAlertState(VehicleStats stats) {
+        AlertState previousState = alertState;
+        AlertState nextState = alertState;
+        if (stats.nearbyAvailableCount >= LOW_STOCK_RECOVERY_COUNT) {
+            nextState = AlertState.NORMAL;
+        } else if (stats.nearbyAvailableCount < LOW_STOCK_THRESHOLD) {
+            nextState = stats.nearbyAvailableCount == 0
+                    ? AlertState.EMPTY
+                    : AlertState.LOW;
+        }
+
+        alertState = nextState;
+        boolean stateChanged = nextState != previousState;
+        if (nextState == AlertState.NORMAL) {
+            if (stateChanged) {
+                DiagnosticLog.event(TAG, "alert recovered count=" + stats.nearbyAvailableCount);
+                NotificationManagerCompat.from(this).cancel(WARNING_ID);
+            }
+            lastNotifiedState = null;
+            lastNotificationMessage = null;
+            return;
+        }
+
+        // 阈值 3、恢复线 4：数量为 3 时保持上一状态，但撤掉已经过时的提醒。
+        if (stats.nearbyAvailableCount >= LOW_STOCK_THRESHOLD
+                && stats.nearbyAvailableCount < LOW_STOCK_RECOVERY_COUNT) {
+            NotificationManagerCompat.from(this).cancel(WARNING_ID);
+            lastNotifiedState = null;
+            lastNotificationMessage = null;
+            return;
+        }
+
+        boolean severityEscalation = nextState == AlertState.EMPTY
+                && lastNotifiedState != AlertState.EMPTY;
+        if (nextState == AlertState.EMPTY) {
+            DiagnosticLog.event(TAG, "alert empty");
+            warn(
+                    getString(R.string.vehicle_alert_warning_empty),
+                    nextState,
+                    severityEscalation
+            );
+        } else {
+            DiagnosticLog.event(TAG, "alert low count=" + stats.nearbyAvailableCount);
+            warn(
+                    getString(R.string.vehicle_alert_warning_few, stats.nearbyAvailableCount),
+                    nextState,
+                    severityEscalation
+            );
+        }
+    }
+
+    private void warn(
+            String message,
+            AlertState warningState,
+            boolean severityEscalation
+    ) {
         if (!hasNotificationAccess(this)) {
             stopSelf();
             return;
         }
         long now = System.currentTimeMillis();
-        if (warningActive && now - lastWarningAtMs < WARNING_COOLDOWN_MS) {
-            return;
-        }
-        warningActive = true;
-        lastWarningAtMs = now;
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager == null) {
             return;
         }
+        if (!severityEscalation) {
+            if (lastNotificationAtMs > 0L
+                    && now - lastNotificationAtMs < MIN_NOTIFICATION_INTERVAL_MS) {
+                updateWarningNotificationSilently(manager, message, now, warningState);
+                return;
+            }
+            if (lastNotifiedState == warningState
+                    && lastNotificationAtMs > 0L
+                    && now - lastNotificationAtMs < WARNING_COOLDOWN_MS) {
+                updateWarningNotificationSilently(manager, message, now, warningState);
+                return;
+            }
+        }
+        lastNotificationAtMs = now;
+        lastNotifiedState = warningState;
+        lastNotificationMessage = message;
+        postWarningNotification(manager, message, now, false);
+    }
+
+    private void updateWarningNotificationSilently(
+            NotificationManager manager,
+            String message,
+            long now,
+            AlertState warningState
+    ) {
+        if (lastNotifiedState != warningState
+                || message.equals(lastNotificationMessage)
+                || !hasActiveWarningNotification(manager)) {
+            return;
+        }
+        lastNotificationMessage = message;
+        postWarningNotification(manager, message, now, true);
+    }
+
+    private static boolean hasActiveWarningNotification(NotificationManager manager) {
+        for (StatusBarNotification notification : manager.getActiveNotifications()) {
+            if (notification.getId() == WARNING_ID) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void postWarningNotification(
+            NotificationManager manager,
+            String message,
+            long now,
+            boolean onlyAlertOnce
+    ) {
         Intent open = new Intent(this, MainActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         PendingIntent contentIntent = PendingIntent.getActivity(
@@ -407,10 +544,157 @@ public final class VehicleAlertService extends Service {
                 .setAutoCancel(true)
                 .setCategory(NotificationCompat.CATEGORY_ALARM)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setOnlyAlertOnce(onlyAlertOnce)
                 .setWhen(now)
                 .setShowWhen(true)
                 .build();
         manager.notify(WARNING_ID, notification);
+    }
+
+    private void fetchSupplementalNearby(
+            List<Bike> initialBikes,
+            GeoPoint queryPoint,
+            Runnable onSuccess,
+            Runnable onFailure
+    ) {
+        supplementalBikes.clear();
+        if (initialBikes != null) {
+            for (Bike bike : initialBikes) {
+                supplementalBikes.put(bike.number, bike);
+            }
+        }
+        GeoPoint[] queryPoints = supplementalQueryPoints(queryPoint);
+        fetchSupplementalAt(queryPoints, 0, onSuccess, onFailure);
+    }
+
+    private void fetchSupplementalAt(
+            GeoPoint[] queryPoints,
+            int index,
+            Runnable onSuccess,
+            Runnable onFailure
+    ) {
+        if (index >= queryPoints.length) {
+            onSuccess.run();
+            return;
+        }
+        GeoPoint queryPoint = queryPoints[index];
+        repository.fetchNearby(
+                queryPoint.getLatitude(),
+                queryPoint.getLongitude(),
+                new BikeRepository.Callback() {
+                    @Override
+                    public void onSuccess(List<Bike> bikes, long fetchedAt) {
+                        if (bikes != null) {
+                            for (Bike bike : bikes) {
+                                supplementalBikes.put(bike.number, bike);
+                            }
+                        }
+                        fetchSupplementalAt(
+                                queryPoints,
+                                index + 1,
+                                onSuccess,
+                                onFailure
+                        );
+                    }
+
+                    @Override
+                    public void onError(String message) {
+                        DiagnosticLog.warn(
+                                TAG,
+                                "Vehicle alert supplemental query failed: " + message
+                        );
+                        onFailure.run();
+                    }
+                }
+        );
+    }
+
+    private static GeoPoint[] supplementalQueryPoints(GeoPoint center) {
+        double latitude = center.getLatitude();
+        double longitude = center.getLongitude();
+        double latitudeOffset = SUPPLEMENTAL_QUERY_OFFSET_METERS / 111_320.0;
+        double longitudeOffset = SUPPLEMENTAL_QUERY_OFFSET_METERS
+                / (111_320.0 * Math.cos(Math.toRadians(latitude)));
+        return new GeoPoint[]{
+                new GeoPoint(latitude + latitudeOffset, longitude),
+                new GeoPoint(latitude - latitudeOffset, longitude),
+                new GeoPoint(latitude, longitude + longitudeOffset),
+                new GeoPoint(latitude, longitude - longitudeOffset)
+        };
+    }
+
+    private static VehicleStats statsFor(Iterable<Bike> bikes, GeoPoint queryPoint) {
+        int availableCount = 0;
+        int nearbyAvailableCount = 0;
+        float nearest = Float.MAX_VALUE;
+        if (bikes != null) {
+            for (Bike bike : bikes) {
+                if (!bike.available || !bike.locationKnown) {
+                    continue;
+                }
+                availableCount++;
+                float distance = distanceMeters(queryPoint, bike);
+                if (distance <= LOW_STOCK_RADIUS_METERS) {
+                    nearbyAvailableCount++;
+                }
+                if (distance < nearest) {
+                    nearest = distance;
+                }
+            }
+        }
+        return new VehicleStats(availableCount, nearbyAvailableCount, nearest);
+    }
+
+    private static float distanceMeters(GeoPoint queryPoint, Bike bike) {
+        float[] result = new float[1];
+        Location.distanceBetween(
+                queryPoint.getLatitude(),
+                queryPoint.getLongitude(),
+                bike.latitude,
+                bike.longitude,
+                result
+        );
+        return result[0];
+    }
+
+    private static float distanceMeters(GeoPoint first, GeoPoint second) {
+        float[] result = new float[1];
+        Location.distanceBetween(
+                first.getLatitude(),
+                first.getLongitude(),
+                second.getLatitude(),
+                second.getLongitude(),
+                result
+        );
+        return result[0];
+    }
+
+    private static void logStats(
+            String prefix,
+            int rawCount,
+            VehicleStats stats,
+            float accuracy
+    ) {
+        DiagnosticLog.detail(TAG, prefix
+                + " raw=" + rawCount
+                + " available=" + stats.availableCount
+                + " within100=" + stats.nearbyAvailableCount
+                + " nearest=" + (stats.nearest == Float.MAX_VALUE
+                ? "n/a"
+                : Math.round(stats.nearest))
+                + " acc=" + Math.round(accuracy));
+    }
+
+    private static final class VehicleStats {
+        final int availableCount;
+        final int nearbyAvailableCount;
+        final float nearest;
+
+        VehicleStats(int availableCount, int nearbyAvailableCount, float nearest) {
+            this.availableCount = availableCount;
+            this.nearbyAvailableCount = nearbyAvailableCount;
+            this.nearest = nearest;
+        }
     }
 
     private interface LocationCallback {

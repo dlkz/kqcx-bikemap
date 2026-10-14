@@ -85,7 +85,9 @@ LICENSES/                              # 第三方许可证文本
 - `QrGalleryStore`：二维码保存、所有权校验和延迟清理。
 - `ReminderScheduler`、`ReminderReceiver`、`ReminderRescheduleReceiver`、`ReminderForegroundService`：
   精确闹钟到点投递、设备重启/覆盖安装补排，以及前台倒计时通知；前台服务不承担到点触发。
-- `VehicleAlertService`：车辆预警后台检测与通知。
+- `VehicleAlertService`：车辆预警后台检测与通知；定位精度不超过 50 米时，
+  按当前位置 100 米内可用车辆少于 3 辆触发，恢复到 4 辆以上解除；
+  接口返回满 20 辆且疑似低库存时，追加四个偏移点查询后再判定，合并结果缓存 60 秒。
 - `DiagnosticLog`、`BikeMapApplication`：本机诊断日志与未捕获异常兜底；事件骨架常开，
   详细日志按需打开，「关于」页负责导出。
 

@@ -89,6 +89,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private static final int REQUEST_LOCATION = 1001;
     private static final int REQUEST_STORAGE = 1003;
     private static final int REQUEST_NOTIFICATIONS = 1004;
+    private static final int REQUEST_VEHICLE_ALERT_LOCATION = 1005;
     private static final int REMINDER_FLOW_NONE = 0;
     private static final int REMINDER_FLOW_FIRST_USE = 1;
     private static final long CHANNEL_HINT_DELAY_MS = 1300L;
@@ -138,12 +139,14 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private static final String PREF_ADVANCED_ENABLED = "advanced_enabled";
     /**
      * 设置里的「自动过滤不可用车辆」，默认开启；键值与
-     * {@link VehicleAlertService#PREF_FILTER_UNAVAILABLE} 保持一致。
+     * 地图列表过滤共享。车辆预警不再复用此开关。
      */
     private static final String PREF_FILTER_UNAVAILABLE = "filter_unavailable";
     private static final String PREF_VEHICLE_ALERT_ENABLED = "vehicle_alert_enabled";
     private static final String PREF_VEHICLE_ALERT_INTERVAL = "vehicle_alert_interval_seconds";
     private static final String PREF_VEHICLE_ALERT_AUTOSTART_PROMPTED = "vehicle_alert_autostart_prompted";
+    private static final String PREF_VEHICLE_ALERT_WAITING_NOTIFICATION =
+            "vehicle_alert_waiting_notification";
     private static final String PREF_QR_HISTORY = "qr_history";
     private static final String PREF_KEEP_QR_HISTORY = "keep_qr_history";
     private static final String PREF_NUMBER_SITE_ID = "number_site_id";
@@ -156,6 +159,12 @@ public final class MainActivity extends BaseActivity implements LocationListener
             "reminder_channel_guide_shown_v1";
     private static final String PREF_REMINDER_PENDING_FLOW = "reminder_pending_flow";
     private static final String PREF_REMINDER_PENDING_STEP = "reminder_pending_step";
+    private static final String PREF_REMINDER_PENDING_START_AT = "reminder_pending_start_at";
+    private static final String PREF_REMINDER_PENDING_END_AT = "reminder_pending_end_at";
+    private static final String PREF_REMINDER_PENDING_LEAD_MINUTES =
+            "reminder_pending_lead_minutes";
+    private static final String PREF_REMINDER_PENDING_ALERT_MODE =
+            "reminder_pending_alert_mode";
     private static final String PREF_REMINDER_OEM_GUIDE_SHOWN = "reminder_oem_guide_shown_v3";
 
     /**
@@ -206,6 +215,8 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private BikeRepository repository;
     private QrGalleryStore qrGalleryStore;
     private VehicleNumberCatalog vehicleNumberCatalog;
+    private boolean vehicleNumberCatalogLoadFinished;
+    private Runnable numberCatalogRefresh;
     private SharedPreferences appPreferences;
     private final List<Bike> bikes = new ArrayList<>();
     private final Map<String, Marker> bikeMarkers = new HashMap<>();
@@ -220,6 +231,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private TextView tvBikeFreshness;
     private TextView tvManualNotice;
     private TextView tvSettingsVersion;
+    private TextView tvVehicleAlertStatus;
     private LinearLayout bikePanel;
     private View settingsPanel;
     private Button btnShowQr;
@@ -308,8 +320,11 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private final java.util.Map<Integer, Integer> chipLastChecked = new java.util.HashMap<>();
     private boolean backgroundSettingsDialogShowing;
     private boolean vehicleAlertNotificationDialogShowing;
+    private boolean awaitingVehicleAlertNotificationPermission;
     private int reminderFlow = REMINDER_FLOW_NONE;
     private View reminderAlertOverlay;
+    private int mapCacheSizeGeneration;
+    private int mapCacheDialogGeneration;
 
     /**
      * 当前处于前台的 MainActivity。提醒小方块只在应用前台时显示，
@@ -337,6 +352,10 @@ public final class MainActivity extends BaseActivity implements LocationListener
         repository = new BikeRepository(this);
         qrGalleryStore = new QrGalleryStore(getApplicationContext(), PREFS_APP);
         appPreferences = getSharedPreferences(PREFS_APP, MODE_PRIVATE);
+        awaitingVehicleAlertNotificationPermission = appPreferences.getBoolean(
+                PREF_VEHICLE_ALERT_WAITING_NOTIFICATION,
+                false
+        );
         // 目录解析放到后台线程，避免将来目录变大时在 onCreate 主线程同步解析卡顿
         // （接近 ANR）。先用空目录占位，所有代码路径都能拿到非 null 实例，解析完成后
         // 再替换并刷新“数据最后更新于”文案。
@@ -385,21 +404,27 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private void loadVehicleNumberCatalogAsync() {
         Context appContext = getApplicationContext();
         new Thread(() -> {
-            VehicleNumberCatalog loaded;
+            VehicleNumberCatalog loaded = null;
             try {
                 loaded = VehicleNumberCatalog.load(appContext);
             } catch (Exception exception) {
                 // 内置目录损坏，或将来被升级成当前版本无法解析的格式时，降级为“无内置编号”
                 // 继续启动：地图、附近车辆查询等主功能可用，只有编号补全不可用，而不是闪退。
                 DiagnosticLog.warn(TAG, "vehicle number catalog unavailable; continuing without it", exception);
-                return;
             }
+            VehicleNumberCatalog resolved = loaded;
             runOnUiThread(() -> {
                 if (isFinishing() || isDestroyed()) {
                     return;
                 }
-                vehicleNumberCatalog = loaded;
+                if (resolved != null) {
+                    vehicleNumberCatalog = resolved;
+                }
+                vehicleNumberCatalogLoadFinished = true;
                 applyCatalogUpdatedAt(findViewById(R.id.tvNumberDataUpdated));
+                if (numberCatalogRefresh != null) {
+                    numberCatalogRefresh.run();
+                }
             });
         }, "vehicle-number-catalog").start();
     }
@@ -415,6 +440,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
         bikePanel = findViewById(R.id.bikePanel);
         settingsPanel = findViewById(R.id.settingsPanel);
         tvSettingsVersion = findViewById(R.id.tvSettingsVersion);
+        tvVehicleAlertStatus = findViewById(R.id.tvVehicleAlertStatus);
         checkAdvanced = findViewById(R.id.checkAdvanced);
         checkThemeSystem = findViewById(R.id.checkThemeSystem);
         checkThemeLight = findViewById(R.id.checkThemeLight);
@@ -590,7 +616,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
 
     private void setupClickListeners() {
         findViewById(R.id.btnLocate).setOnClickListener(view -> {
-            if (!hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)) {
+            if (!hasLocationPermission()) {
                 requestLocationPermission();
                 return;
             }
@@ -692,6 +718,13 @@ public final class MainActivity extends BaseActivity implements LocationListener
             preferences.edit()
                     .putBoolean(PREF_VEHICLE_ALERT_ENABLED, checked)
                     .apply();
+            if (!checked) {
+                awaitingVehicleAlertNotificationPermission = false;
+                preferences.edit()
+                        .remove(PREF_VEHICLE_ALERT_WAITING_NOTIFICATION)
+                        .apply();
+                updateVehicleAlertStatus(0);
+            }
             if (checked) {
                 VehicleAlertService.ensureChannels(this);
             }
@@ -767,21 +800,30 @@ public final class MainActivity extends BaseActivity implements LocationListener
         boolean enabled = appPreferences.getBoolean(PREF_VEHICLE_ALERT_ENABLED, false);
         if (!enabled || !VehicleAlertService.isTimerRunning(this)) {
             VehicleAlertService.stop(this);
+            updateVehicleAlertStatus(0);
             return;
         }
         if (!appPreferences.getBoolean(PREF_DISCLAIMER_ACCEPTED, false)
                 || !appPreferences.getBoolean(PREF_USAGE_NOTICE_SHOWN, false)) {
             VehicleAlertService.stop(this);
+            updateVehicleAlertStatus(0);
             return;
         }
         if (!hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)) {
+            updateVehicleAlertStatus(R.string.vehicle_alert_paused_location);
             if (fromUserAction) {
-                Toast.makeText(this, R.string.permission_location, Toast.LENGTH_LONG).show();
+                showPermissionExplanation(
+                        R.string.permission_location_title,
+                        R.string.vehicle_alert_precise_location_message,
+                        new String[]{Manifest.permission.ACCESS_FINE_LOCATION},
+                        REQUEST_VEHICLE_ALERT_LOCATION
+                );
             }
             return;
         }
         if (!VehicleAlertService.hasNotificationAccess(this)) {
             VehicleAlertService.stop(this);
+            updateVehicleAlertStatus(R.string.vehicle_alert_paused_notification);
             if (fromUserAction) {
                 showVehicleAlertNotificationDialog();
             }
@@ -793,7 +835,22 @@ public final class MainActivity extends BaseActivity implements LocationListener
             if (fromUserAction) {
                 Toast.makeText(this, R.string.vehicle_alert_start_failed, Toast.LENGTH_LONG).show();
             }
+            updateVehicleAlertStatus(0);
+            return;
         }
+        updateVehicleAlertStatus(0);
+    }
+
+    private void updateVehicleAlertStatus(int textRes) {
+        if (tvVehicleAlertStatus == null) {
+            return;
+        }
+        if (textRes == 0) {
+            tvVehicleAlertStatus.setVisibility(View.GONE);
+            return;
+        }
+        tvVehicleAlertStatus.setText(textRes);
+        tvVehicleAlertStatus.setVisibility(View.VISIBLE);
     }
 
     private void showVehicleAlertAutostartDialog() {
@@ -821,9 +878,37 @@ public final class MainActivity extends BaseActivity implements LocationListener
                 .setCancelable(false)
                 .setPositiveButton(
                         R.string.vehicle_alert_notification_open,
-                        (ignored, which) -> openAppNotificationSettings()
+                        (ignored, which) -> {
+                            awaitingVehicleAlertNotificationPermission = true;
+                            appPreferences.edit()
+                                    .putBoolean(
+                                            PREF_VEHICLE_ALERT_WAITING_NOTIFICATION,
+                                            true
+                                    )
+                                    .commit();
+                            if (!openAppNotificationSettings()) {
+                                awaitingVehicleAlertNotificationPermission = false;
+                                appPreferences.edit()
+                                        .remove(PREF_VEHICLE_ALERT_WAITING_NOTIFICATION)
+                                        .apply();
+                                updateVehicleAlertStatus(
+                                        R.string.vehicle_alert_paused_notification
+                                );
+                            }
+                        }
                 )
-                .setNegativeButton(R.string.permission_not_now, null)
+                .setNegativeButton(
+                        R.string.permission_not_now,
+                        (ignored, which) -> {
+                            awaitingVehicleAlertNotificationPermission = false;
+                            appPreferences.edit()
+                                    .remove(PREF_VEHICLE_ALERT_WAITING_NOTIFICATION)
+                                    .apply();
+                            updateVehicleAlertStatus(
+                                    R.string.vehicle_alert_paused_notification
+                            );
+                        }
+                )
                 .create();
         dialog.setOnDismissListener(ignored -> vehicleAlertNotificationDialogShowing = false);
         dialog.show();
@@ -972,7 +1057,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     private void startInitialPermissionFlow() {
-        if (hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)) {
+        if (hasLocationPermission()) {
             startLocationUpdates();
         } else {
             requestLocationPermission();
@@ -985,6 +1070,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     private void hideSettings() {
+        mapCacheDialogGeneration++;
         settingsPanel.setVisibility(View.GONE);
     }
 
@@ -1023,10 +1109,21 @@ public final class MainActivity extends BaseActivity implements LocationListener
         if (tvMapCacheSize == null) {
             return;
         }
-        long bytes = mapCacheSizeBytes();
-        tvMapCacheSize.setText(bytes <= 0L
-                ? getString(R.string.map_cache_empty)
-                : formatByteSize(bytes));
+        int generation = ++mapCacheSizeGeneration;
+        tvMapCacheSize.setText(R.string.map_cache_calculating);
+        new Thread(() -> {
+            long bytes = mapCacheSizeBytes();
+            runOnUiThread(() -> {
+                if (isFinishing()
+                        || isDestroyed()
+                        || generation != mapCacheSizeGeneration) {
+                    return;
+                }
+                tvMapCacheSize.setText(bytes <= 0L
+                        ? getString(R.string.map_cache_empty)
+                        : formatByteSize(bytes));
+            });
+        }, "map-cache-size").start();
     }
 
     private static String formatByteSize(long bytes) {
@@ -1040,7 +1137,25 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     private void showClearMapCacheDialog() {
-        long bytes = mapCacheSizeBytes();
+        if (tvMapCacheSize != null) {
+            tvMapCacheSize.setText(R.string.map_cache_calculating);
+        }
+        int requestGeneration = ++mapCacheDialogGeneration;
+        new Thread(() -> {
+            long bytes = mapCacheSizeBytes();
+            runOnUiThread(() -> {
+                if (isFinishing()
+                        || isDestroyed()
+                        || requestGeneration != mapCacheDialogGeneration
+                        || settingsPanel.getVisibility() != View.VISIBLE) {
+                    return;
+                }
+                showClearMapCacheDialog(bytes);
+            });
+        }, "map-cache-clear-size").start();
+    }
+
+    private void showClearMapCacheDialog(long bytes) {
         if (bytes <= 0L) {
             Toast.makeText(this, R.string.map_cache_empty, Toast.LENGTH_SHORT).show();
             updateMapCacheSizeLabel();
@@ -2013,6 +2128,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
         pendingReminderStartAt = endAt - ReminderScheduler.DURATION_MS;
         pendingReminderEndAt = endAt;
         reminderFlow = REMINDER_FLOW_SCHEDULE;
+        persistPendingReminderData();
         continueScheduleExactAlarm();
     }
 
@@ -2100,18 +2216,21 @@ public final class MainActivity extends BaseActivity implements LocationListener
         dialog.show();
     }
 
-    private void openAppNotificationSettings() {
+    private boolean openAppNotificationSettings() {
         try {
             startActivity(new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                     .putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName()));
+            return true;
         } catch (RuntimeException ignored) {
             try {
                 startActivity(new Intent(
                         Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                         Uri.parse("package:" + getPackageName())
                 ));
+                return true;
             } catch (RuntimeException ignoredAgain) {
                 // No system settings page is available on this device.
+                return false;
             }
         }
     }
@@ -2231,13 +2350,30 @@ public final class MainActivity extends BaseActivity implements LocationListener
         appPreferences.edit()
                 .putInt(PREF_REMINDER_PENDING_FLOW, reminderFlow)
                 .putString(PREF_REMINDER_PENDING_STEP, step == null ? "" : step)
-                .apply();
+                .putLong(PREF_REMINDER_PENDING_START_AT, pendingReminderStartAt)
+                .putLong(PREF_REMINDER_PENDING_END_AT, pendingReminderEndAt)
+                .putInt(PREF_REMINDER_PENDING_LEAD_MINUTES, pendingReminderLeadMinutes)
+                .putString(PREF_REMINDER_PENDING_ALERT_MODE, pendingReminderAlertMode)
+                .commit();
+    }
+
+    private void persistPendingReminderData() {
+        appPreferences.edit()
+                .putLong(PREF_REMINDER_PENDING_START_AT, pendingReminderStartAt)
+                .putLong(PREF_REMINDER_PENDING_END_AT, pendingReminderEndAt)
+                .putInt(PREF_REMINDER_PENDING_LEAD_MINUTES, pendingReminderLeadMinutes)
+                .putString(PREF_REMINDER_PENDING_ALERT_MODE, pendingReminderAlertMode)
+                .commit();
     }
 
     private void clearReminderFlowStep() {
         appPreferences.edit()
                 .putInt(PREF_REMINDER_PENDING_FLOW, REMINDER_FLOW_NONE)
                 .putString(PREF_REMINDER_PENDING_STEP, "")
+                .remove(PREF_REMINDER_PENDING_START_AT)
+                .remove(PREF_REMINDER_PENDING_END_AT)
+                .remove(PREF_REMINDER_PENDING_LEAD_MINUTES)
+                .remove(PREF_REMINDER_PENDING_ALERT_MODE)
                 .apply();
     }
 
@@ -2251,6 +2387,22 @@ public final class MainActivity extends BaseActivity implements LocationListener
         if (flow == REMINDER_FLOW_NONE || step == null || step.isEmpty()) {
             return;
         }
+        long startAt = appPreferences.getLong(PREF_REMINDER_PENDING_START_AT, 0L);
+        long endAt = appPreferences.getLong(PREF_REMINDER_PENDING_END_AT, 0L);
+        if (startAt <= 0L || endAt <= System.currentTimeMillis()) {
+            resetReminderSetupState();
+            return;
+        }
+        pendingReminderStartAt = startAt;
+        pendingReminderEndAt = endAt;
+        pendingReminderLeadMinutes = appPreferences.getInt(
+                PREF_REMINDER_PENDING_LEAD_MINUTES,
+                ReminderScheduler.DEFAULT_LEAD_MINUTES
+        );
+        pendingReminderAlertMode = appPreferences.getString(
+                PREF_REMINDER_PENDING_ALERT_MODE,
+                ReminderScheduler.MODE_SOUND_VIBRATE
+        );
         reminderFlow = flow;
         if ("exact_alarm".equals(step)) {
             awaitingExactAlarmPermission = true;
@@ -2335,7 +2487,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     private void requestLocationPermission() {
-        if (hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)) {
+        if (hasLocationPermission()) {
             startLocationUpdates();
             return;
         }
@@ -2363,22 +2515,33 @@ public final class MainActivity extends BaseActivity implements LocationListener
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(titleRes)
                 .setMessage(messageRes)
+                .setCancelable(requestCode != REQUEST_VEHICLE_ALERT_LOCATION)
                 .setPositiveButton(
                         R.string.permission_continue,
                         (ignored, which) -> requestPermissions(permissions, requestCode)
                 )
-                .setNegativeButton(R.string.permission_not_now, (ignored, which) -> {
-                    if (requestCode == REQUEST_LOCATION) {
-                        tvStatus.setText(R.string.permission_location);
-                    } else if (requestCode == REQUEST_STORAGE) {
-                        pendingQrBitmap = null;
-                        pendingQrNumber = "";
-                        pendingOpenWeChatAfterQrSave = false;
-                    }
-                })
+                .setNegativeButton(
+                        R.string.permission_not_now,
+                        (ignored, which) -> handlePermissionExplanationDeclined(requestCode)
+                )
                 .create();
+        dialog.setOnCancelListener(
+                ignored -> handlePermissionExplanationDeclined(requestCode)
+        );
         dialog.setOnDismissListener(ignored -> permissionDialogShowing = false);
         dialog.show();
+    }
+
+    private void handlePermissionExplanationDeclined(int requestCode) {
+        if (requestCode == REQUEST_LOCATION) {
+            tvStatus.setText(R.string.permission_location);
+        } else if (requestCode == REQUEST_STORAGE) {
+            pendingQrBitmap = null;
+            pendingQrNumber = "";
+            pendingOpenWeChatAfterQrSave = false;
+        } else if (requestCode == REQUEST_VEHICLE_ALERT_LOCATION) {
+            updateVehicleAlertStatus(R.string.vehicle_alert_paused_location);
+        }
     }
 
     private void loadBikes(GeoPoint center, boolean force) {
@@ -3059,6 +3222,10 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     private void showNumberInput() {
+        showNumberInput("");
+    }
+
+    private void showNumberInput(String initialValue) {
         View content = LayoutInflater.from(this).inflate(R.layout.dialog_number_input, null);
         EditText input = content.findViewById(R.id.inputTail);
         View previewPanel = content.findViewById(R.id.inputPreviewPanel);
@@ -3082,6 +3249,10 @@ public final class MainActivity extends BaseActivity implements LocationListener
                     return null;
                 }
         });
+        if (initialValue != null && !initialValue.isEmpty()) {
+            input.setText(initialValue);
+            input.setSelection(input.length());
+        }
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setView(content)
@@ -3099,8 +3270,16 @@ public final class MainActivity extends BaseActivity implements LocationListener
 
         Runnable updateResolution = () -> {
             String raw = input.getText().toString().trim();
+            if (vehicleNumberCatalogLoadFinished
+                    && vehicleNumberCatalog.site(selectedSiteId[0]) == null) {
+                selectedSiteId[0] = preferredNumberSiteId();
+                selectedSeries[0] = preferredNumberSeries(selectedSiteId[0]);
+            }
             VehicleNumberCatalog.Site selectedSite = vehicleNumberCatalog.site(selectedSiteId[0]);
             if (selectedSite != null) {
+                if (!selectedSite.series.contains(selectedSeries[0])) {
+                    selectedSeries[0] = preferredNumberSeries(selectedSiteId[0]);
+                }
                 numberSite.setText(selectedSite.name);
                 numberSeries.setText(getString(
                         R.string.number_series_title_format,
@@ -3116,6 +3295,15 @@ public final class MainActivity extends BaseActivity implements LocationListener
             previewPanel.setOnClickListener(null);
             previewSite.setVisibility(View.GONE);
             if (raw.isEmpty()) {
+                setNumberConfirmEnabled(dialog, false);
+                return;
+            }
+            if (!vehicleNumberCatalogLoadFinished
+                    && raw.length() != VehicleNumberCatalog.NUMBER_LENGTH) {
+                numberSite.setText(R.string.number_catalog_loading);
+                numberSeries.setText("");
+                error.setText(R.string.number_catalog_loading);
+                error.setVisibility(View.VISIBLE);
                 setNumberConfirmEnabled(dialog, false);
                 return;
             }
@@ -3221,6 +3409,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
             setNumberConfirmEnabled(dialog, false);
         };
         updateResolutionRef[0] = updateResolution;
+        numberCatalogRefresh = updateResolution;
 
         numberRangeRow.setOnClickListener(view -> showNumberRangePicker(
                 selectedSiteId,
@@ -3249,7 +3438,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
                 View row = createHistoryRow(entry);
                 row.setOnClickListener(view -> {
                     dialog.dismiss();
-                    openQrInWeChat(entry.number);
+                    openQrHistoryEntry(entry);
                 });
                 historyContainer.addView(row);
             }
@@ -3294,6 +3483,11 @@ public final class MainActivity extends BaseActivity implements LocationListener
             });
             updateResolution.run();
             input.requestFocus();
+        });
+        dialog.setOnDismissListener(ignored -> {
+            if (numberCatalogRefresh == updateResolution) {
+                numberCatalogRefresh = null;
+            }
         });
         dialog.show();
     }
@@ -3479,7 +3673,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
         labels.setGravity(Gravity.CENTER_VERTICAL);
 
         TextView numberView = textView(
-                entry.number,
+                entry.displayNumber(),
                 15,
                 R.color.text_primary,
                 true
@@ -3515,7 +3709,9 @@ public final class MainActivity extends BaseActivity implements LocationListener
         ));
 
         TextView action = textView(
-                getString(R.string.history_action),
+                getString(entry.number.isEmpty()
+                        ? R.string.history_action_complete
+                        : R.string.history_action),
                 12,
                 R.color.control_accent_text,
                 true
@@ -3553,20 +3749,36 @@ public final class MainActivity extends BaseActivity implements LocationListener
             if (stored.isEmpty()) {
                 continue;
             }
-            String number = VehicleNumberCatalog.normalize(stored);
-            if (vehicleNumberCatalog.find(number) == null && stored.length() <= 3) {
-                String tail = VehicleNumberCatalog.normalize(stored);
-                number = "100000" + tail.substring(tail.length() - VehicleNumberCatalog.TAIL_LENGTH);
+            String number = "";
+            String tail = "";
+            VehicleNumberCatalog.NumberInfo info = null;
+            if (stored.matches("\\d{1,4}")) {
+                tail = stored;
+                if (tail.length() >= VehicleNumberCatalog.TAIL_LENGTH) {
+                    info = resolveUniqueHistoryTail(storedSite, tail);
+                }
+                if (info != null) {
+                    number = info.number;
+                    storedSite = info.siteName == null ? storedSite : info.siteName;
+                }
+            } else {
+                number = VehicleNumberCatalog.normalize(stored);
+                if (!number.matches("\\d{9}")) {
+                    continue;
+                }
+                info = vehicleNumberCatalog.find(number);
             }
-            if (!number.matches("\\d{9}") || containsHistoryNumber(history, number)) {
-                continue;
-            }
-            if (storedSite.isEmpty()) {
-                VehicleNumberCatalog.NumberInfo info = vehicleNumberCatalog.find(number);
-                storedSite = info == null || info.siteName == null ? "" : info.siteName;
+            if (storedSite.isEmpty()
+                    && info != null
+                    && info.siteName != null) {
+                storedSite = info.siteName;
             }
             storedSite = BikeRepository.correctSiteName(storedSite);
-            history.add(new QrHistoryEntry(number, storedSite));
+            QrHistoryEntry entry = new QrHistoryEntry(number, tail, storedSite);
+            if (containsHistoryEntry(history, entry)) {
+                continue;
+            }
+            history.add(entry);
             if (history.size() >= QR_HISTORY_LIMIT) {
                 break;
             }
@@ -3594,7 +3806,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
                 history.remove(index);
             }
         }
-        history.add(0, new QrHistoryEntry(normalized, resolvedSite));
+        history.add(0, new QrHistoryEntry(normalized, "", resolvedSite));
         while (history.size() > QR_HISTORY_LIMIT) {
             history.remove(history.size() - 1);
         }
@@ -3613,7 +3825,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
                 raw.append(',');
             }
             QrHistoryEntry entry = history.get(index);
-            raw.append(entry.number);
+            raw.append(entry.persistenceValue());
             if (!entry.siteName.isEmpty()) {
                 raw.append('|').append(entry.siteName);
             }
@@ -3624,13 +3836,40 @@ public final class MainActivity extends BaseActivity implements LocationListener
                 .apply();
     }
 
-    private static boolean containsHistoryNumber(List<QrHistoryEntry> history, String number) {
+    private static boolean containsHistoryEntry(
+            List<QrHistoryEntry> history,
+            QrHistoryEntry candidate
+    ) {
         for (QrHistoryEntry entry : history) {
-            if (entry.number.equals(number)) {
+            if (entry.persistenceValue().equals(candidate.persistenceValue())) {
                 return true;
             }
         }
         return false;
+    }
+
+    private VehicleNumberCatalog.NumberInfo resolveUniqueHistoryTail(
+            String siteName,
+            String tail
+    ) {
+        VehicleNumberCatalog.NumberInfo unique = null;
+        String expectedSite = BikeRepository.correctSiteName(siteName);
+        for (VehicleNumberCatalog.Site site : vehicleNumberCatalog.sites()) {
+            for (VehicleNumberCatalog.NumberInfo candidate
+                    : vehicleNumberCatalog.matchesSuffix(site.id, null, tail)) {
+                if (!expectedSite.isEmpty()
+                        && !expectedSite.equals(BikeRepository.correctSiteName(
+                        candidate.siteName
+                ))) {
+                    continue;
+                }
+                if (unique != null && !unique.number.equals(candidate.number)) {
+                    return null;
+                }
+                unique = candidate;
+            }
+        }
+        return unique;
     }
 
     private void clearQrHistory() {
@@ -3764,11 +4003,25 @@ public final class MainActivity extends BaseActivity implements LocationListener
     /** One "recently generated" entry: the vehicle number plus its site name. */
     private static final class QrHistoryEntry {
         final String number;
+        final String tail;
         final String siteName;
 
         QrHistoryEntry(String number, String siteName) {
+            this(number, "", siteName);
+        }
+
+        QrHistoryEntry(String number, String tail, String siteName) {
             this.number = number;
+            this.tail = tail;
             this.siteName = siteName == null ? "" : siteName;
+        }
+
+        String displayNumber() {
+            return number.isEmpty() ? tail : number;
+        }
+
+        String persistenceValue() {
+            return number.isEmpty() ? tail : number;
         }
     }
 
@@ -3841,6 +4094,21 @@ public final class MainActivity extends BaseActivity implements LocationListener
             Toast.makeText(this, R.string.qr_generate_failed, Toast.LENGTH_LONG)
                     .show();
             return null;
+        }
+    }
+
+    private void openQrHistoryEntry(QrHistoryEntry entry) {
+        if (entry.number.matches("\\d{9}")) {
+            openQrInWeChat(entry.number);
+        } else if (entry.tail.length() < VehicleNumberCatalog.TAIL_LENGTH) {
+            Toast.makeText(
+                    this,
+                    R.string.history_tail_incomplete_hint,
+                    Toast.LENGTH_LONG
+            ).show();
+            showNumberInput("");
+        } else if (!entry.tail.isEmpty()) {
+            showNumberInput(entry.tail);
         }
     }
 
@@ -4017,17 +4285,32 @@ public final class MainActivity extends BaseActivity implements LocationListener
         return checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED;
     }
 
+    private boolean hasLocationPermission() {
+        return hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+                || hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION);
+    }
+
     private void startLocationUpdates() {
         DiagnosticLog.event("Loc", "start updates");
         // Re-registering is idempotent: drop any previous registration first so
         // repeated calls cannot stack duplicate listeners.
         stopLocationUpdates();
 
+        boolean hasFineLocation = hasPermission(Manifest.permission.ACCESS_FINE_LOCATION);
+        boolean hasCoarseLocation = hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION);
+        if (!hasFineLocation && !hasCoarseLocation) {
+            tvStatus.setText(R.string.permission_location);
+            return;
+        }
+
         Location bestLastKnown = null;
-        for (String provider : new String[]{
+        String[] providers = hasFineLocation
+                ? new String[]{
                 LocationManager.GPS_PROVIDER,
                 LocationManager.NETWORK_PROVIDER
-        }) {
+        }
+                : new String[]{LocationManager.NETWORK_PROVIDER};
+        for (String provider : providers) {
             try {
                 Location candidate = locationManager.getLastKnownLocation(provider);
                 if (candidate != null
@@ -4035,8 +4318,8 @@ public final class MainActivity extends BaseActivity implements LocationListener
                         || candidate.getAccuracy() < bestLastKnown.getAccuracy())) {
                     bestLastKnown = candidate;
                 }
-            } catch (SecurityException ignored) {
-                // Permission is checked before this method is called.
+            } catch (IllegalArgumentException | SecurityException exception) {
+                DiagnosticLog.detail("Loc", "provider unavailable " + provider);
             }
         }
 
@@ -4049,23 +4332,41 @@ public final class MainActivity extends BaseActivity implements LocationListener
             onLocationChanged(bestLastKnown);
         }
 
-        try {
-            locationManager.requestLocationUpdates(
+        boolean registered = false;
+        if (hasFineLocation) {
+            registered |= requestLocationUpdatesSafe(
                     LocationManager.GPS_PROVIDER,
                     4000L,
-                    8f,
-                    this,
-                    Looper.getMainLooper()
+                    8f
             );
-            locationManager.requestLocationUpdates(
-                    LocationManager.NETWORK_PROVIDER,
-                    8000L,
-                    20f,
-                    this,
-                    Looper.getMainLooper()
-            );
-        } catch (SecurityException exception) {
+        }
+        registered |= requestLocationUpdatesSafe(
+                LocationManager.NETWORK_PROVIDER,
+                8000L,
+                20f
+        );
+        if (!registered) {
             tvStatus.setText(R.string.permission_location);
+        }
+    }
+
+    private boolean requestLocationUpdatesSafe(
+            String provider,
+            long minTimeMs,
+            float minDistanceMeters
+    ) {
+        try {
+            locationManager.requestLocationUpdates(
+                    provider,
+                    minTimeMs,
+                    minDistanceMeters,
+                    this,
+                    Looper.getMainLooper()
+            );
+            return true;
+        } catch (IllegalArgumentException | SecurityException exception) {
+            DiagnosticLog.detail("Loc", "request unavailable " + provider);
+            return false;
         }
     }
 
@@ -4241,10 +4542,28 @@ public final class MainActivity extends BaseActivity implements LocationListener
             return;
         }
 
-        if (grantResults.length == 0 || grantResults[0] != PackageManager.PERMISSION_GRANTED) {
-            if (requestCode == REQUEST_LOCATION) {
+        if (requestCode == REQUEST_LOCATION) {
+            if (hasLocationPermission()) {
+                startLocationUpdates();
+            } else {
                 tvStatus.setText(R.string.permission_location);
-            } else if (requestCode == REQUEST_STORAGE) {
+            }
+            return;
+        }
+
+        if (requestCode == REQUEST_VEHICLE_ALERT_LOCATION) {
+            if (hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)) {
+                startLocationUpdates();
+                applyVehicleAlertState(true);
+            } else {
+                updateVehicleAlertStatus(R.string.vehicle_alert_paused_location);
+                Toast.makeText(this, R.string.permission_location, Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
+
+        if (grantResults.length == 0 || grantResults[0] != PackageManager.PERMISSION_GRANTED) {
+            if (requestCode == REQUEST_STORAGE) {
                 pendingQrBitmap = null;
                 pendingQrNumber = "";
                 pendingOpenWeChatAfterQrSave = false;
@@ -4254,9 +4573,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
             return;
         }
 
-        if (requestCode == REQUEST_LOCATION) {
-            startLocationUpdates();
-        } else if (requestCode == REQUEST_STORAGE
+        if (requestCode == REQUEST_STORAGE
                 && pendingQrBitmap != null
                 && !pendingQrNumber.isEmpty()) {
             Bitmap bitmap = pendingQrBitmap;
@@ -4368,6 +4685,17 @@ public final class MainActivity extends BaseActivity implements LocationListener
         DiagnosticLog.event("Main", "resume");
         foregroundInstance = this;
         mapView.onResume();
+        if (awaitingVehicleAlertNotificationPermission) {
+            awaitingVehicleAlertNotificationPermission = false;
+            appPreferences.edit()
+                    .remove(PREF_VEHICLE_ALERT_WAITING_NOTIFICATION)
+                    .apply();
+            if (!VehicleAlertService.hasNotificationAccess(this)) {
+                updateVehicleAlertStatus(
+                        R.string.vehicle_alert_paused_notification
+                );
+            }
+        }
         if (reminderFlow == REMINDER_FLOW_NONE && ReminderScheduler.isActive(this)) {
             ReminderScheduler.rescheduleActive(this);
         }
@@ -4385,7 +4713,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
         }
         // Foreground-only location: re-register on every resume, otherwise the
         // position stays frozen after the app returns from the background.
-        if (hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)) {
+        if (hasLocationPermission()) {
             startLocationUpdates();
         }
     }
@@ -4422,6 +4750,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
     @Override
     protected void onPause() {
         DiagnosticLog.event("Main", "pause");
+        mapCacheDialogGeneration++;
         if (foregroundInstance == this) {
             foregroundInstance = null;
         }
