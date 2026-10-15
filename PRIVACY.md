@@ -54,7 +54,7 @@
 | `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | 用户主动选择时降低后台冻结造成的提醒延迟 |
 | `VIBRATE` | 按所选方式提供震动提醒 |
 | `WAKE_LOCK` | 到点投递时短暂唤醒设备 |
-| `FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_SPECIAL_USE` | 提醒计时期间显示常驻倒计时通知 |
+| `FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_SPECIAL_USE` | 提醒计时期间显示倒计时通知；车辆预警启动检查时短暂显示前台通知 |
 | `FOREGROUND_SERVICE_LOCATION` | 车辆预警在后台定时定位 |
 
 ## 变更

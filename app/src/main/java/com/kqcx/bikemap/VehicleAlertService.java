@@ -156,6 +156,7 @@ public final class VehicleAlertService extends Service {
     }
 
     static void stop(Context context) {
+        NotificationManagerCompat.from(context).cancel(WARNING_ID);
         context.stopService(new Intent(context, VehicleAlertService.class));
     }
 
@@ -166,33 +167,53 @@ public final class VehicleAlertService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (!isEnabled(this)
-                || !isTimerRunning(this)
-                || !hasNotificationAccess(this)
-                || checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
-                != PackageManager.PERMISSION_GRANTED) {
-            stopSelf();
-            return START_NOT_STICKY;
-        }
         boolean checkRequested = intent != null
                 && ACTION_CHECK.equals(intent.getAction());
-        locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
         ensureChannels(this);
         Notification notification = buildOngoingNotification();
+        // 先满足 startForegroundService() 的时限要求，再判断是否继续运行。
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 startForeground(
                         ONGOING_ID,
                         notification,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
                 );
             } else {
                 startForeground(ONGOING_ID, notification);
             }
         } catch (RuntimeException exception) {
             DiagnosticLog.warn(TAG, "Vehicle alert could not become foreground", exception);
-            stopSelf();
+            stopSelf(startId);
             return START_NOT_STICKY;
+        }
+
+        if (!isEnabled(this)
+                || !isTimerRunning(this)
+                || !hasNotificationAccess(this)
+                || checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED) {
+            stopSelf(startId);
+            return START_NOT_STICKY;
+        }
+        locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // Android 14+ 可能不允许后台启动 location 类型，失败时安全结束。
+            try {
+                startForeground(
+                        ONGOING_ID,
+                        notification,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+                );
+            } catch (RuntimeException exception) {
+                DiagnosticLog.warn(
+                        TAG,
+                        "Vehicle alert could not switch to location foreground",
+                        exception
+                );
+                stopSelf(startId);
+                return START_NOT_STICKY;
+            }
         }
         if (checkRequested) {
             if (!checkInFlight) {
@@ -219,6 +240,7 @@ public final class VehicleAlertService extends Service {
         if (repository != null) {
             repository.shutdown();
         }
+        NotificationManagerCompat.from(this).cancel(WARNING_ID);
         stopForeground(STOP_FOREGROUND_REMOVE);
         super.onDestroy();
     }

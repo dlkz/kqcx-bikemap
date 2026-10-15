@@ -63,7 +63,11 @@
         <service
             android:name=".VehicleAlertService"
             android:exported="false"
-            android:foregroundServiceType="location" />
+            android:foregroundServiceType="location|specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Shows a brief startup notification while vehicle alert prerequisites are checked." />
+        </service>
 
         <service
             android:name=".ReminderForegroundService"

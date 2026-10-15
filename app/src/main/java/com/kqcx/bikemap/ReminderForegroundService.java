@@ -34,13 +34,9 @@ public final class ReminderForegroundService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (!ReminderScheduler.isActive(this)) {
-            stopSelf();
-            return START_NOT_STICKY;
-        }
-
         ensureChannel();
         Notification notification = buildNotification();
+        // 先满足 startForegroundService() 的时限要求，再校验提醒是否仍有效。
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(
                     NOTIFICATION_ID,
@@ -49,6 +45,10 @@ public final class ReminderForegroundService extends Service {
             );
         } else {
             startForeground(NOTIFICATION_ID, notification);
+        }
+        if (!ReminderScheduler.isActive(this)) {
+            stopSelf(startId);
+            return START_NOT_STICKY;
         }
         return START_STICKY;
     }
@@ -73,7 +73,11 @@ public final class ReminderForegroundService extends Service {
                 openIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
-        return new NotificationCompat.Builder(this, CHANNEL_ID)
+        long endAt = ReminderScheduler.scheduledEndAt(this);
+        long when = endAt > System.currentTimeMillis()
+                ? endAt
+                : System.currentTimeMillis();
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_reminder_notification)
                 .setContentTitle(getString(R.string.reminder_button_active))
                 .setContentText(getString(
@@ -81,14 +85,16 @@ public final class ReminderForegroundService extends Service {
                         ReminderScheduler.scheduledLeadMinutes(this)
                 ))
                 .setContentIntent(contentIntent)
-                .setWhen(ReminderScheduler.scheduledEndAt(this))
-                .setUsesChronometer(true)
-                .setChronometerCountDown(true)
+                .setWhen(when)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setCategory(NotificationCompat.CATEGORY_STOPWATCH)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .build();
+                .setPriority(NotificationCompat.PRIORITY_LOW);
+        if (endAt > System.currentTimeMillis()) {
+            builder.setUsesChronometer(true)
+                    .setChronometerCountDown(true);
+        }
+        return builder.build();
     }
 
     private void ensureChannel() {
