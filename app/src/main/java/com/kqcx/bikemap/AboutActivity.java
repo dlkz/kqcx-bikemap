@@ -18,8 +18,12 @@ import androidx.core.view.WindowInsetsCompat;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public final class AboutActivity extends BaseActivity {
+    private final ExecutorService exportExecutor = Executors.newSingleThreadExecutor();
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -57,14 +61,24 @@ public final class AboutActivity extends BaseActivity {
      * 去哪里由用户选（微信 / 邮件 / 文件管理）。
      */
     private void shareDiagnostics() {
-        File report;
-        try {
-            report = DiagnosticLog.exportReport(this);
-        } catch (IOException | RuntimeException exception) {
-            Toast.makeText(this, R.string.about_diagnostics_export_failed, Toast.LENGTH_SHORT)
-                    .show();
-            return;
-        }
+        exportExecutor.execute(() -> {
+            File report;
+            try {
+                report = DiagnosticLog.exportReport(this);
+            } catch (IOException | RuntimeException exception) {
+                runOnUiThread(() -> showDiagnosticsExportFailed());
+                return;
+            }
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                shareDiagnosticsReport(report);
+            });
+        });
+    }
+
+    private void shareDiagnosticsReport(File report) {
         try {
             Uri uri = FileProvider.getUriForFile(
                     this,
@@ -80,10 +94,23 @@ public final class AboutActivity extends BaseActivity {
                     getString(R.string.about_diagnostics_export)
             ));
         } catch (ActivityNotFoundException | IllegalArgumentException exception) {
-            Toast.makeText(this, R.string.about_diagnostics_export_failed, Toast.LENGTH_SHORT)
-                    .show();
+            showDiagnosticsExportFailed();
         }
         refreshDiagnosticsSummary();
+    }
+
+    private void showDiagnosticsExportFailed() {
+        if (isFinishing() || isDestroyed()) {
+            return;
+        }
+        Toast.makeText(this, R.string.about_diagnostics_export_failed, Toast.LENGTH_SHORT)
+                .show();
+    }
+
+    @Override
+    protected void onDestroy() {
+        exportExecutor.shutdown();
+        super.onDestroy();
     }
 
     private void confirmClearDiagnostics() {

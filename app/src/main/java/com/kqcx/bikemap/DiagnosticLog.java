@@ -14,7 +14,6 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.io.Reader;
-import java.io.StringWriter;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
@@ -33,7 +32,8 @@ import java.util.Locale;
  *   <li>只写本机 {@code filesDir/diagnose/}，不联网、不上传；导出由用户在「关于」页
  *       主动触发，走系统分享，应用不经手网络；</li>
  *   <li>不记录坐标原值、完整车辆编号、凭据或任何用户输入内容；</li>
- *   <li>事件日志按大小滚动（两个文件封顶），崩溃文件保留最近若干份；</li>
+ *   <li>事件日志按大小滚动（两个文件封顶），崩溃文件保留最近若干份；
+ *       单文件和单条记录都有字节上限；</li>
  *   <li>写入同步完成——崩溃前最后几条不能丢，而那恰恰是最有价值的一段。</li>
  * </ul>
  */
@@ -47,6 +47,12 @@ final class DiagnosticLog {
     private static final int MAX_CRASH_FILES = 5;
     private static final int MAX_EXPORT_FILES = 3;
     private static final long MAX_EVENT_BYTES = 256L * 1024L;
+    private static final int MAX_EVENT_RECORD_BYTES = 64 * 1024;
+    private static final int MAX_EVENT_MESSAGE_BYTES = 16 * 1024;
+    private static final int MAX_EVENT_STACK_CHARS = 32 * 1024;
+    private static final long MAX_CRASH_BYTES = 512L * 1024L;
+    private static final int MAX_CRASH_STACK_CHARS = 128 * 1024;
+    private static final String TRUNCATED_SUFFIX = "\n...（内容过长，已截断）";
     private static final String PREF_DETAIL = "diagnostic_detail";
     private static final String LINE_TIME_FORMAT = "MM-dd HH:mm:ss.SSS";
     /**
@@ -193,18 +199,10 @@ final class DiagnosticLog {
      */
     static File exportReport(Context context) throws IOException {
         Context app = context.getApplicationContext();
-        StringBuilder report = new StringBuilder();
-        appendHeader(report, app);
-        appendSection(report, "事件日志（较早）", new File(logDir, EVENT_BACKUP));
-        appendSection(report, "事件日志", new File(logDir, EVENT_FILE));
-        List<File> crashes = crashFiles();
-        for (File crash : crashes) {
-            appendSection(report, "崩溃记录 " + crash.getName(), crash);
+        File dir = logDir;
+        if (dir == null) {
+            throw new IOException("log directory unavailable");
         }
-        if (crashes.isEmpty()) {
-            report.append("\n===== 崩溃记录 =====\n（无）\n");
-        }
-
         File exportDir = new File(app.getCacheDir(), EXPORT_DIR);
         if (!exportDir.exists() && !exportDir.mkdirs()) {
             throw new IOException("export directory unavailable");
@@ -218,34 +216,42 @@ final class DiagnosticLog {
                 new FileOutputStream(target, false),
                 StandardCharsets.UTF_8
         )) {
-            writer.write(report.toString());
+            appendHeader(writer, app);
+            appendSection(writer, "事件日志（较早）", new File(dir, EVENT_BACKUP));
+            appendSection(writer, "事件日志", new File(dir, EVENT_FILE));
+            List<File> crashes = crashFiles();
+            for (File crash : crashes) {
+                appendSection(writer, "崩溃记录 " + crash.getName(), crash);
+            }
+            if (crashes.isEmpty()) {
+                writer.write("\n===== 崩溃记录 =====\n（无）\n");
+            }
         }
         pruneExports(exportDir, target);
         return target;
     }
 
-    private static void appendHeader(StringBuilder report, Context app) {
-        report.append("BikeMap 诊断日志\n");
-        report.append("导出时间: ").append(new SimpleDateFormat(
-                "yyyy-MM-dd HH:mm:ss", Locale.ROOT).format(new Date())).append('\n');
-        report.append("应用版本: ").append(BuildConfig.VERSION_NAME)
-                .append(" (build ").append(BuildConfig.BUILD_NUMBER).append(", ")
-                .append(BuildConfig.DEBUG ? "debug" : "release").append(")\n");
-        report.append("包名: ").append(app.getPackageName()).append('\n');
-        report.append("Android: ").append(Build.VERSION.RELEASE)
-                .append(" (API ").append(Build.VERSION.SDK_INT).append(")\n");
-        report.append("机型: ").append(Build.MANUFACTURER).append(' ')
-                .append(Build.MODEL).append('\n');
-        report.append("详细日志: ").append(detailEnabled ? "开启" : "关闭").append('\n');
-        report.append("提醒计时: ")
-                .append(ReminderScheduler.isActive(app) ? "运行中" : "未运行").append('\n');
-        report.append("车辆预警: ")
-                .append(VehicleAlertService.isTimerRunning(app) ? "运行中" : "未启动").append('\n');
-        report.append("位置权限: ").append(hasPermission(app,
-                android.Manifest.permission.ACCESS_FINE_LOCATION) ? "已授予" : "未授予").append('\n');
-        report.append("通知权限: ").append(VehicleAlertService.hasNotificationAccess(app)
-                ? "可用" : "不可用").append('\n');
-        report.append('\n');
+    private static void appendHeader(Writer report, Context app) throws IOException {
+        report.write("BikeMap 诊断日志\n");
+        report.write("导出时间: " + new SimpleDateFormat(
+                "yyyy-MM-dd HH:mm:ss", Locale.ROOT).format(new Date()) + "\n");
+        report.write("应用版本: " + BuildConfig.VERSION_NAME
+                + " (build " + BuildConfig.BUILD_NUMBER + ", "
+                + (BuildConfig.DEBUG ? "debug" : "release") + ")\n");
+        report.write("包名: " + app.getPackageName() + "\n");
+        report.write("Android: " + Build.VERSION.RELEASE
+                + " (API " + Build.VERSION.SDK_INT + ")\n");
+        report.write("机型: " + Build.MANUFACTURER + " "
+                + Build.MODEL + "\n");
+        report.write("详细日志: " + (detailEnabled ? "开启" : "关闭") + "\n");
+        report.write("提醒计时: "
+                + (ReminderScheduler.isActive(app) ? "运行中" : "未运行") + "\n");
+        report.write("车辆预警: "
+                + (VehicleAlertService.isTimerRunning(app) ? "运行中" : "未启动") + "\n");
+        report.write("位置权限: " + (hasPermission(app,
+                android.Manifest.permission.ACCESS_FINE_LOCATION) ? "已授予" : "未授予") + "\n");
+        report.write("通知权限: " + (VehicleAlertService.hasNotificationAccess(app)
+                ? "可用" : "不可用") + "\n\n");
     }
 
     private static boolean hasPermission(Context context, String permission) {
@@ -253,18 +259,11 @@ final class DiagnosticLog {
                 == android.content.pm.PackageManager.PERMISSION_GRANTED;
     }
 
-    private static void appendSection(StringBuilder report, String title, File file) {
+    private static void appendSection(Writer report, String title, File file) throws IOException {
         if (file == null || !file.isFile()) {
             return;
         }
-        report.append("===== ").append(title)
-                .append(" (").append(file.length()).append(" B) =====\n");
-        report.append(readAll(file));
-        report.append('\n');
-    }
-
-    private static String readAll(File file) {
-        StringBuilder content = new StringBuilder();
+        report.write("===== " + title + " (" + file.length() + " B) =====\n");
         try (Reader reader = new InputStreamReader(
                 new FileInputStream(file),
                 StandardCharsets.UTF_8
@@ -272,12 +271,12 @@ final class DiagnosticLog {
             char[] buffer = new char[4096];
             int read;
             while ((read = reader.read(buffer)) > 0) {
-                content.append(buffer, 0, read);
+                report.write(buffer, 0, read);
             }
         } catch (IOException exception) {
-            content.append("（读取失败：").append(exception.getMessage()).append("）");
+            report.write("（读取失败：" + exception.getMessage() + "）");
         }
-        return content.toString();
+        report.write('\n');
     }
 
     private static void installCrashHandler() {
@@ -312,22 +311,40 @@ final class DiagnosticLog {
             if (logDir == null) {
                 return;
             }
-            StringBuilder line = new StringBuilder();
+            String record = formatEventRecord(level, tag, message, throwable);
             File current = new File(logDir, EVENT_FILE);
-            if (current.length() > MAX_EVENT_BYTES) {
+            if (current.length() > 0
+                    && current.length() + utf8Length(record) > MAX_EVENT_BYTES) {
                 rollEventLog(current);
             }
-            line.append(LINE_TIME.format(new Date()))
-                    .append(' ').append(level).append(' ')
-                    .append(tag).append(": ").append(message);
-            if (throwable != null) {
-                line.append('\n').append(stackTraceOf(throwable));
-            }
-            appendText(
-                    new File(logDir, EVENT_FILE),
-                    line.append('\n').toString()
-            );
+            appendText(new File(logDir, EVENT_FILE), record);
         }
+    }
+
+    private static String formatEventRecord(
+            String level,
+            String tag,
+            String message,
+            Throwable throwable
+    ) {
+        StringBuilder line = new StringBuilder();
+        line.append(LINE_TIME.format(new Date()))
+                .append(' ').append(level).append(' ')
+                .append(tag).append(": ")
+                .append(truncateUtf8(
+                        message == null ? "" : message,
+                        MAX_EVENT_MESSAGE_BYTES
+                ));
+        if (throwable != null) {
+            line.append('\n').append(stackTraceOf(
+                    throwable,
+                    MAX_EVENT_STACK_CHARS
+            ));
+        }
+        return truncateUtf8(
+                line.append('\n').toString(),
+                MAX_EVENT_RECORD_BYTES
+        );
     }
 
     private static int levelToPriority(String level) {
@@ -384,12 +401,16 @@ final class DiagnosticLog {
                     .append(" (API ").append(Build.VERSION.SDK_INT).append(")\n");
             content.append("device: ").append(Build.MANUFACTURER)
                     .append(' ').append(Build.MODEL).append("\n\n");
-            content.append(stackTraceOf(throwable));
+            content.append(stackTraceOf(throwable, MAX_CRASH_STACK_CHARS));
+            String crashText = truncateUtf8(
+                    content.toString(),
+                    (int) MAX_CRASH_BYTES
+            );
             try (Writer writer = new OutputStreamWriter(
                     new FileOutputStream(file, false),
                     StandardCharsets.UTF_8
             )) {
-                writer.write(content.toString());
+                writer.write(crashText);
             } catch (IOException ignored) {
                 return;
             }
@@ -397,12 +418,110 @@ final class DiagnosticLog {
         }
     }
 
-    private static String stackTraceOf(Throwable throwable) {
-        StringWriter buffer = new StringWriter();
+    private static String stackTraceOf(Throwable throwable, int maxChars) {
+        LimitedStringWriter buffer = new LimitedStringWriter(maxChars);
         try (PrintWriter printer = new PrintWriter(buffer)) {
             throwable.printStackTrace(printer);
         }
-        return buffer.toString();
+        return buffer.content();
+    }
+
+    private static int utf8Length(String value) {
+        return value.getBytes(StandardCharsets.UTF_8).length;
+    }
+
+    private static String truncateUtf8(String value, int maxBytes) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        int suffixBytes = utf8Length(TRUNCATED_SUFFIX);
+        int contentLimit = Math.max(0, maxBytes - suffixBytes);
+        StringBuilder truncated = new StringBuilder();
+        int bytes = 0;
+        for (int index = 0; index < value.length(); ) {
+            int codePoint = value.codePointAt(index);
+            int codePointBytes = utf8Length(codePoint);
+            if (bytes + codePointBytes > contentLimit) {
+                return truncated.append(TRUNCATED_SUFFIX).toString();
+            }
+            truncated.appendCodePoint(codePoint);
+            bytes += codePointBytes;
+            index += Character.charCount(codePoint);
+        }
+        return truncated.toString();
+    }
+
+    private static int utf8Length(int codePoint) {
+        if (codePoint <= 0x7F) {
+            return 1;
+        }
+        if (codePoint <= 0x7FF) {
+            return 2;
+        }
+        if (codePoint <= 0xFFFF) {
+            return 3;
+        }
+        return 4;
+    }
+
+    private static final class LimitedStringWriter extends Writer {
+        private final StringBuilder buffer = new StringBuilder();
+        private final int maxChars;
+        private boolean truncated;
+
+        LimitedStringWriter(int maxChars) {
+            this.maxChars = maxChars;
+        }
+
+        @Override
+        public void write(char[] chars, int offset, int length) {
+            appendLimited(chars, offset, length);
+        }
+
+        @Override
+        public void write(String value, int offset, int length) {
+            if (value == null || length <= 0) {
+                return;
+            }
+            if (buffer.length() >= maxChars) {
+                truncated = true;
+                return;
+            }
+            int allowed = Math.min(length, maxChars - buffer.length());
+            buffer.append(value, offset, offset + allowed);
+            if (allowed < length) {
+                truncated = true;
+            }
+        }
+
+        @Override
+        public void flush() {
+        }
+
+        @Override
+        public void close() {
+        }
+
+        String content() {
+            return truncated
+                    ? buffer.append(TRUNCATED_SUFFIX).toString()
+                    : buffer.toString();
+        }
+
+        private void appendLimited(char[] chars, int offset, int length) {
+            if (chars == null || length <= 0) {
+                return;
+            }
+            if (buffer.length() >= maxChars) {
+                truncated = true;
+                return;
+            }
+            int allowed = Math.min(length, maxChars - buffer.length());
+            buffer.append(chars, offset, allowed);
+            if (allowed < length) {
+                truncated = true;
+            }
+        }
     }
 
     private static List<File> crashFiles() {

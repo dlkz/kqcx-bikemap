@@ -70,7 +70,8 @@ public final class BikeRepository {
     }
 
     private final Context context;
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final Object executorLock = new Object();
+    private ExecutorService executor = Executors.newSingleThreadExecutor();
 
     public BikeRepository(Context context) {
         this.context = context.getApplicationContext();
@@ -78,7 +79,7 @@ public final class BikeRepository {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     public void fetchNearby(double centerLatitude, double centerLongitude, Callback callback) {
-        executor.execute(() -> {
+        execute(() -> {
             try {
                 List<Bike> bikes = request(centerLatitude, centerLongitude);
                 mainHandler.post(() -> callback.onSuccess(bikes, System.currentTimeMillis()));
@@ -100,7 +101,7 @@ public final class BikeRepository {
             double centerLongitude,
             BikeCallback callback
     ) {
-        executor.execute(() -> {
+        execute(() -> {
             try {
                 String response = executePost(
                         ONE_CAR_URL,
@@ -117,8 +118,39 @@ public final class BikeRepository {
         });
     }
 
+    /**
+     * 结束当前链路并换用新的单线程 executor，避免旧的慢请求阻塞后续检查。
+     * 已经投递到主线程队列的旧回调由调用方的 generation 负责忽略。
+     */
+    public void cancelPending() {
+        ExecutorService previous;
+        synchronized (executorLock) {
+            previous = executor;
+            executor = Executors.newSingleThreadExecutor();
+        }
+        if (previous != null) {
+            previous.shutdownNow();
+        }
+    }
+
     public void shutdown() {
-        executor.shutdownNow();
+        ExecutorService previous;
+        synchronized (executorLock) {
+            previous = executor;
+            executor = null;
+        }
+        if (previous != null) {
+            previous.shutdownNow();
+        }
+    }
+
+    private void execute(Runnable task) {
+        synchronized (executorLock) {
+            if (executor == null || executor.isShutdown()) {
+                return;
+            }
+            executor.execute(task);
+        }
     }
 
     private List<Bike> request(double centerLatitude, double centerLongitude) throws Exception {

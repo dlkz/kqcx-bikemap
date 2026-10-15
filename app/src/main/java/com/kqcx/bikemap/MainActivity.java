@@ -3029,6 +3029,8 @@ public final class MainActivity extends BaseActivity implements LocationListener
                         RECENTER_ANIMATION_MS
                 );
             }
+            // 动画结束后按最终视口刷新顶栏，清除上一次查询留下的错误文案。
+            mapView.postDelayed(this::updateViewportStatus, RECENTER_SETTLE_DELAY_MS);
         }
     }
 

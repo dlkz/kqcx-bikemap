@@ -64,6 +64,7 @@ public final class VehicleAlertService extends Service {
     private static final float SUPPLEMENTAL_CACHE_RADIUS_METERS = 25f;
     private static final long SUPPLEMENTAL_QUERY_MIN_INTERVAL_MS = 60_000L;
     private static final long FIRST_CHECK_DELAY_MS = 1_500L;
+    private static final long CHECK_TOTAL_BUDGET_MS = 30_000L;
     private static final long MIN_NOTIFICATION_INTERVAL_MS = 15_000L;
     private static final long WARNING_COOLDOWN_MS = 60_000L;
     private static final long FIX_TIMEOUT_MS = 8_000L;
@@ -83,6 +84,10 @@ public final class VehicleAlertService extends Service {
     private boolean checkInFlight;
     /** 已排期的下一次检查，用于避免重复 start 把检查间隔重置。 */
     private boolean checkScheduled;
+    private int checkGeneration;
+    private boolean destroyed;
+    private Runnable checkTimeoutRunnable;
+    private VehicleStats pendingBestStats;
     private AlertState alertState = AlertState.NORMAL;
     private AlertState lastNotifiedState;
     private String lastNotificationMessage;
@@ -233,7 +238,12 @@ public final class VehicleAlertService extends Service {
 
     @Override
     public void onDestroy() {
+        destroyed = true;
+        checkGeneration++;
+        checkInFlight = false;
+        pendingBestStats = null;
         handler.removeCallbacks(checkRunnable);
+        cancelCheckTimeout();
         checkScheduled = false;
         cancelBackstop();
         cancelLocationRequest();
@@ -246,6 +256,9 @@ public final class VehicleAlertService extends Service {
     }
 
     private void scheduleNext(long delayMs) {
+        if (destroyed) {
+            return;
+        }
         handler.removeCallbacks(checkRunnable);
         long safeDelay = Math.max(1_000L, delayMs);
         handler.postDelayed(checkRunnable, safeDelay);
@@ -292,6 +305,23 @@ public final class VehicleAlertService extends Service {
         }
     }
 
+    private void scheduleCheckTimeout(int generation) {
+        cancelCheckTimeout();
+        checkTimeoutRunnable = () -> finishCheck(generation, true);
+        handler.postDelayed(checkTimeoutRunnable, CHECK_TOTAL_BUDGET_MS);
+    }
+
+    private void cancelCheckTimeout() {
+        if (checkTimeoutRunnable != null) {
+            handler.removeCallbacks(checkTimeoutRunnable);
+            checkTimeoutRunnable = null;
+        }
+    }
+
+    private boolean isActiveCheck(int generation) {
+        return !destroyed && checkInFlight && generation == checkGeneration;
+    }
+
     private void cancelBackstop() {
         AlarmManager alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
         if (alarmManager == null) {
@@ -313,21 +343,31 @@ public final class VehicleAlertService extends Service {
 
     private void runCheck() {
         checkScheduled = false;
+        if (destroyed) {
+            return;
+        }
         if (!isEnabled(this)
                 || !isTimerRunning(this)
                 || !hasNotificationAccess(this)) {
             stopSelf();
             return;
         }
-        cancelBackstop();
         if (checkInFlight) {
             return;
         }
+        int generation = ++checkGeneration;
         checkInFlight = true;
+        pendingBestStats = null;
+        // 链路期间保留一个覆盖总预算的兜底；成功结束时会被下一次正常兜底覆盖。
+        scheduleBackstop(CHECK_TOTAL_BUDGET_MS + BACKSTOP_MARGIN_MS);
+        scheduleCheckTimeout(generation);
         requestLocation(location -> {
+            if (!isActiveCheck(generation)) {
+                return;
+            }
             if (location == null) {
                 DiagnosticLog.warn(TAG, "Vehicle alert check skipped: no location fix");
-                finishCheck();
+                finishCheck(generation, false);
                 return;
             }
             // 前台和车辆接口均使用 GCJ-02；直接传 Android 的 WGS-84
@@ -343,27 +383,50 @@ public final class VehicleAlertService extends Service {
                     new BikeRepository.Callback() {
                         @Override
                         public void onSuccess(List<Bike> bikes, long fetchedAt) {
+                            if (!isActiveCheck(generation)) {
+                                return;
+                            }
                             evaluateNearby(
                                     bikes,
                                     queryPoint,
                                     locationAccuracy,
-                                    VehicleAlertService.this::finishCheck
+                                    generation,
+                                    () -> finishCheck(generation, false)
                             );
                         }
 
                         @Override
                         public void onError(String message) {
+                            if (!isActiveCheck(generation)) {
+                                return;
+                            }
                             DiagnosticLog.warn(TAG, "Vehicle alert query failed: " + message);
-                            finishCheck();
+                            finishCheck(generation, false);
                         }
                     }
             );
         });
     }
 
-    private void finishCheck() {
+    private void finishCheck(int generation, boolean timedOut) {
+        if (destroyed || generation != checkGeneration) {
+            return;
+        }
+        checkGeneration++;
+        cancelCheckTimeout();
+        cancelLocationRequest();
         checkInFlight = false;
-        if (!isEnabled(this) || !isTimerRunning(this)) {
+        if (timedOut) {
+            DiagnosticLog.warn(TAG, "Vehicle alert check timed out");
+            if (pendingBestStats != null) {
+                applyAlertState(pendingBestStats);
+            }
+            if (repository != null) {
+                repository.cancelPending();
+            }
+        }
+        pendingBestStats = null;
+        if (destroyed || !isEnabled(this) || !isTimerRunning(this)) {
             stopSelf();
             return;
         }
@@ -374,8 +437,12 @@ public final class VehicleAlertService extends Service {
             List<Bike> bikes,
             GeoPoint queryPoint,
             float locationAccuracy,
+            int generation,
             Runnable onComplete
     ) {
+        if (!isActiveCheck(generation)) {
+            return;
+        }
         float accuracy = Float.isNaN(locationAccuracy)
                 ? Float.MAX_VALUE
                 : Math.max(0f, locationAccuracy);
@@ -386,6 +453,7 @@ public final class VehicleAlertService extends Service {
         }
 
         VehicleStats stats = statsFor(bikes, queryPoint);
+        pendingBestStats = stats;
         logStats("check", bikes == null ? 0 : bikes.size(), stats, accuracy);
         if (bikes != null
                 && bikes.size() >= MAX_NEARBY_RESULTS
@@ -398,6 +466,7 @@ public final class VehicleAlertService extends Service {
                     && distanceMeters(lastSupplementalQueryPoint, queryPoint)
                     <= SUPPLEMENTAL_CACHE_RADIUS_METERS) {
                 logStats("check cached", bikes.size(), lastSupplementalStats, accuracy);
+                pendingBestStats = lastSupplementalStats;
                 applyAlertState(lastSupplementalStats);
                 onComplete.run();
                 return;
@@ -406,11 +475,16 @@ public final class VehicleAlertService extends Service {
             fetchSupplementalNearby(
                     bikes,
                     queryPoint,
+                    generation,
                     () -> {
+                        if (!isActiveCheck(generation)) {
+                            return;
+                        }
                         VehicleStats mergedStats = statsFor(
                                 supplementalBikes.values(),
                                 queryPoint
                         );
+                        pendingBestStats = mergedStats;
                         logStats(
                                 "check merged",
                                 supplementalBikes.size(),
@@ -436,6 +510,9 @@ public final class VehicleAlertService extends Service {
     }
 
     private void applyAlertState(VehicleStats stats) {
+        if (destroyed || !isEnabled(this) || !isTimerRunning(this)) {
+            return;
+        }
         AlertState previousState = alertState;
         AlertState nextState = alertState;
         if (stats.nearbyAvailableCount >= LOW_STOCK_RECOVERY_COUNT) {
@@ -491,6 +568,9 @@ public final class VehicleAlertService extends Service {
             AlertState warningState,
             boolean severityEscalation
     ) {
+        if (destroyed || !isEnabled(this) || !isTimerRunning(this)) {
+            return;
+        }
         if (!hasNotificationAccess(this)) {
             stopSelf();
             return;
@@ -503,14 +583,26 @@ public final class VehicleAlertService extends Service {
         if (!severityEscalation) {
             if (lastNotificationAtMs > 0L
                     && now - lastNotificationAtMs < MIN_NOTIFICATION_INTERVAL_MS) {
-                updateWarningNotificationSilently(manager, message, now, warningState);
-                return;
+                if (updateWarningNotificationSilently(
+                        manager,
+                        message,
+                        now,
+                        warningState
+                )) {
+                    return;
+                }
             }
             if (lastNotifiedState == warningState
                     && lastNotificationAtMs > 0L
                     && now - lastNotificationAtMs < WARNING_COOLDOWN_MS) {
-                updateWarningNotificationSilently(manager, message, now, warningState);
-                return;
+                if (updateWarningNotificationSilently(
+                        manager,
+                        message,
+                        now,
+                        warningState
+                )) {
+                    return;
+                }
             }
         }
         lastNotificationAtMs = now;
@@ -519,19 +611,26 @@ public final class VehicleAlertService extends Service {
         postWarningNotification(manager, message, now, false);
     }
 
-    private void updateWarningNotificationSilently(
+    private boolean updateWarningNotificationSilently(
             NotificationManager manager,
             String message,
             long now,
             AlertState warningState
     ) {
+        if (!hasActiveWarningNotification(manager)) {
+            // 通知已被用户或系统移除：冷却状态失效，下一次检查重新发布。
+            lastNotificationAtMs = 0L;
+            lastNotifiedState = null;
+            lastNotificationMessage = null;
+            return false;
+        }
         if (lastNotifiedState != warningState
-                || message.equals(lastNotificationMessage)
-                || !hasActiveWarningNotification(manager)) {
-            return;
+                || message.equals(lastNotificationMessage)) {
+            return true;
         }
         lastNotificationMessage = message;
         postWarningNotification(manager, message, now, true);
+        return true;
     }
 
     private static boolean hasActiveWarningNotification(NotificationManager manager) {
@@ -576,6 +675,7 @@ public final class VehicleAlertService extends Service {
     private void fetchSupplementalNearby(
             List<Bike> initialBikes,
             GeoPoint queryPoint,
+            int generation,
             Runnable onSuccess,
             Runnable onFailure
     ) {
@@ -586,15 +686,27 @@ public final class VehicleAlertService extends Service {
             }
         }
         GeoPoint[] queryPoints = supplementalQueryPoints(queryPoint);
-        fetchSupplementalAt(queryPoints, 0, onSuccess, onFailure);
+        fetchSupplementalAt(
+                queryPoints,
+                queryPoint,
+                0,
+                generation,
+                onSuccess,
+                onFailure
+        );
     }
 
     private void fetchSupplementalAt(
             GeoPoint[] queryPoints,
+            GeoPoint center,
             int index,
+            int generation,
             Runnable onSuccess,
             Runnable onFailure
     ) {
+        if (!isActiveCheck(generation)) {
+            return;
+        }
         if (index >= queryPoints.length) {
             onSuccess.run();
             return;
@@ -606,14 +718,20 @@ public final class VehicleAlertService extends Service {
                 new BikeRepository.Callback() {
                     @Override
                     public void onSuccess(List<Bike> bikes, long fetchedAt) {
+                        if (!isActiveCheck(generation)) {
+                            return;
+                        }
                         if (bikes != null) {
                             for (Bike bike : bikes) {
                                 supplementalBikes.put(bike.number, bike);
                             }
                         }
+                        pendingBestStats = statsFor(supplementalBikes.values(), center);
                         fetchSupplementalAt(
                                 queryPoints,
+                                center,
                                 index + 1,
+                                generation,
                                 onSuccess,
                                 onFailure
                         );
@@ -621,6 +739,9 @@ public final class VehicleAlertService extends Service {
 
                     @Override
                     public void onError(String message) {
+                        if (!isActiveCheck(generation)) {
+                            return;
+                        }
                         DiagnosticLog.warn(
                                 TAG,
                                 "Vehicle alert supplemental query failed: " + message
