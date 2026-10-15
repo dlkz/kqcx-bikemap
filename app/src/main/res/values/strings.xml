@@ -232,12 +232,12 @@
     <string name="about_diagnostics_clear_failed">部分日志未能清除，请稍后重试</string>
     <string name="about_author_avatar">作者头像</string>
     <string name="about_changelog">更新日志</string>
+    <string name="about_changelog_version_211">2.1.1</string>
+    <string name="about_changelog_summary_211">· 提升车辆预警稳定性\n· 修复通知补发与关闭后残留\n· 完善诊断日志边界与导出\n· 修复编号查询顶部状态刷新</string>
     <string name="about_changelog_version_210">2.1.0</string>
     <string name="about_changelog_summary_210">· 新增诊断日志导出与清除\n· 更新车辆编号数据，新增校区\n· 修复前后台切换后定位异常\n· 修复提醒权限与车辆预警相关问题</string>
     <string name="about_changelog_version">2.0.0</string>
     <string name="about_changelog_summary">· 重构应用结构，统一界面风格\n· 新增提醒功能\n· 新增车辆预警功能\n· 新增清除地图缓存\n· 支持多所高校车辆编号填写\n· 新增最近生成记录\n· 体积大幅优化\n· 修复一些 BUG</string>
-    <string name="about_changelog_version_101">1.0.1</string>
-    <string name="about_changelog_summary_101">· 重新排版设置页\n· 新增版本信息页\n· 完善许可鸣谢与免责声明\n· 修复一些 BUG</string>
     <string name="disclaimer_title">免责声明</string>
     <string name="disclaimer_content">本应用用于查看地图中心附近车辆、生成车辆二维码及提供本地提醒功能，为个人独立开发的非官方工具，与任何车辆品牌、运营方及相关平台均无隶属、合作或关联关系。应用内出现的名称与标识的权利归各自权利人所有。\n\n数据与第三方服务\n车辆位置和状态来自第三方接口，可能存在延迟、偏差或缺失。相关第三方数据与服务的可用性、准确性由其提供方负责。\n\n担保与责任\n软件按“现状”提供，不提供任何明示或默示担保；在法律允许的最大范围内，开发者不对因使用或无法使用本应用造成的任何损害（包括数据丢失、行程延误、罚款、收益损失）承担责任。\n\n本应用为开源软件，许可信息见「关于」页。\n最后更新：2026 年 9 月 24 日</string>
     <string name="disclaimer_agree">同意并继续</string>

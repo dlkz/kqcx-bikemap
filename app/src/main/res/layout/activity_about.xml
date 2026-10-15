@@ -343,6 +343,24 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
+                        android:text="@string/about_changelog_version_211"
+                        android:textColor="@color/control_accent_text"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:lineSpacingExtra="6dp"
+                        android:text="@string/about_changelog_summary_211"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="14sp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="16dp"
                         android:text="@string/about_changelog_version_210"
                         android:textColor="@color/control_accent_text"
                         android:textSize="14sp"
@@ -372,24 +390,6 @@
                         android:layout_marginTop="6dp"
                         android:lineSpacingExtra="6dp"
                         android:text="@string/about_changelog_summary"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="14sp" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="16dp"
-                        android:text="@string/about_changelog_version_101"
-                        android:textColor="@color/control_accent_text"
-                        android:textSize="14sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
-                        android:lineSpacingExtra="3dp"
-                        android:text="@string/about_changelog_summary_101"
                         android:textColor="@color/text_secondary"
                         android:textSize="14sp" />
 

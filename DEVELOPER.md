@@ -119,7 +119,8 @@ LICENSES/                              # 第三方许可证文本
   导出的合成报告流式写入 `cacheDir/diagnose-export/`，最多保留 3 份，不再整份驻留内存。
 - FileProvider：authority `${applicationId}.fileprovider`；`res/xml/file_paths.xml`
   只开 `diagnose-export/` 一个根，多一个根就多一份被其他应用读到的可能。
-- 写入是同步完成的，不走异步队列：崩溃前最后几条不能丢，而那恰恰是最有价值的一段。
+- 日志写入同步完成，不走异步队列：崩溃前最后几条不能丢，而那恰恰是最有价值的一段；
+  导出报告在后台线程生成，完成后回到主线程调起系统分享。
 - 挂接点：`BikeMapApplication.onCreate` 装 `Thread.setDefaultUncaughtExceptionHandler`
   （链式调用原 handler，不改变系统原有的崩溃行为）；其余日志统一走
   `DiagnosticLog.event/detail/warn/error`，不要再直接调用 `android.util.Log`。
@@ -136,11 +137,11 @@ LICENSES/                              # 第三方许可证文本
 - 发布包必须使用正式 Release 签名。
 - 签名身份自 1.0.2 起为当前证书；1.0.1 及更早是旧证书，不能覆盖安装，必须先卸载。
   2.0.0 及之后的正式版共用同一签名，可以直接覆盖升级，本机设置与记录保留。
-- `versionCode` = `主版本 × 100,000 + 小版本 × 1,000 + 构建号`（见 `app/build.gradle.kts`）。
-  构建号按“主版本.小版本”轨道从 1 重置，同一小版本下的补丁版本继续沿用构建序列，
-  versionCode 保持单调递增；`version.properties` 的 `buildNumberFor` 保存当前轨道（如 `2.1`），
-  主版本或小版本变化时才重新计起。上限：构建号 999、小版本 99，越界直接构建失败；
-  debug 与 release 共用同一套编号。
+- `versionCode` = `主版本 × 100,000 + 小版本 × 1,000 + 补丁号 × 100 + 构建号`
+  （见 `app/build.gradle.kts`）。构建号按完整“主版本.小版本.补丁号”轨道从 1 重置，
+  同一版本内递增，versionCode 保持单调递增；`version.properties` 的 `buildNumberFor`
+  保存当前轨道（如 `2.1.1`），主版本、小版本或补丁号变化时从 1 重计。
+  上限：构建号 99、补丁号 99、小版本 99，越界直接构建失败；debug 与 release 共用同一套编号。
 - 发布 APK 时，应在 GitHub Release 同时提供对应源码或源码链接。
 - 本应用原创代码按 AGPL-3.0 授权；第三方组件与参考项目继续遵循各自许可证。
 

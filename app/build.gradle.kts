@@ -14,11 +14,12 @@ val appVersionName = versionProperties.getProperty("versionName", "2.0.0")
 val appVersionParts = appVersionName.split('.')
 val appVersionMajor = appVersionParts.getOrNull(0)?.toIntOrNull() ?: 2
 val appVersionMinor = appVersionParts.getOrNull(1)?.toIntOrNull() ?: 0
-val appVersionTrack = "$appVersionMajor.$appVersionMinor"
+val appVersionPatch = appVersionParts.getOrNull(2)?.toIntOrNull() ?: 0
+val appVersionTrack = "$appVersionMajor.$appVersionMinor.$appVersionPatch"
 
 /**
- * 构建号按“主版本.小版本”重置：`buildNumberFor` 记录当前构建号属于哪个版本轨道，
- * 同一小版本下的补丁版本继续沿用构建序列。
+ * 构建号按完整“主版本.小版本.补丁号”重置：`buildNumberFor` 记录当前构建号属于哪个
+ * 版本轨道，版本变化后从 1 重新开始。
  */
 val recordedBuildNumberTrack = versionProperties.getProperty("buildNumberFor", "")
 val storedBuildNumber = versionProperties.getProperty("buildNumber", "1").toInt()
@@ -26,13 +27,16 @@ val appBuildNumber =
     if (recordedBuildNumberTrack == appVersionTrack) storedBuildNumber else 1
 
 /**
- * versionCode = 主版本 × 100,000 + 小版本 × 1,000 + 构建号。
+ * versionCode = 主版本 × 100,000 + 小版本 × 1,000 + 补丁号 × 100 + 构建号。
  *
- * 构建号可以按小版本归零，同时 versionCode 始终单调递增，覆盖安装不会被判成降级。
- * 约束：构建号 1..999、小版本 0..99；越界会串号，这里直接构建失败。
+ * 版本变化时构建号从 1 重计，同时 versionCode 始终单调递增，覆盖安装不会被判成降级。
+ * 约束：构建号 1..99、补丁号 0..99、小版本 0..99；越界会串号，这里直接构建失败。
  */
 val appVersionCode =
-    appVersionMajor * 100_000 + appVersionMinor * 1_000 + appBuildNumber
+    appVersionMajor * 100_000 +
+            appVersionMinor * 1_000 +
+            appVersionPatch * 100 +
+            appBuildNumber
 
 require(appVersionMajor in 1..21000) {
     "versionName 主版本超出可编码范围（1..21000）：$appVersionName"
@@ -40,8 +44,11 @@ require(appVersionMajor in 1..21000) {
 require(appVersionMinor in 0..99) {
     "versionName 小版本必须小于 100：$appVersionName"
 }
-require(appBuildNumber in 1..999) {
-    "构建号必须在 1..999 之间：$appBuildNumber（versionName=$appVersionName）"
+require(appVersionPatch in 0..99) {
+    "versionName 补丁号必须小于 100：$appVersionName"
+}
+require(appBuildNumber in 1..99) {
+    "构建号必须在 1..99 之间：$appBuildNumber（versionName=$appVersionName）"
 }
 
 val legalAssetsDir = layout.buildDirectory.dir("generated/legalAssets")
