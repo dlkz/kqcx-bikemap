@@ -1,8 +1,15 @@
 # 单车地图开发说明
 
-面向 GitHub 仓库维护者。用户功能见 [README.md](README.md)，数据处理见 [PRIVACY.md](PRIVACY.md)，第三方组件见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+面向仓库维护者。用户功能见 [README.md](README.md)，数据处理见 [PRIVACY.md](PRIVACY.md)，第三方组件见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-## 技术基线
+## 1. 项目概览
+
+- 应用定位：非官方 Android 工具，用于查看地图中心附近车辆、按编号定位车辆、生成二维码并提供本地提醒。
+- 发布渠道：GitHub Releases。
+- 原创代码许可：AGPL-3.0。
+- 当前工程没有完整的单元测试或仪器测试套件，发布前依赖构建、静态检查和真机验证。
+
+## 2. 技术基线
 
 | 项 | 要求 |
 |---|---|
@@ -11,23 +18,76 @@
 | Gradle / AGP | 8.13 / 8.13.2 |
 | JDK | 17+ |
 | Android SDK | compileSdk / targetSdk 36，minSdk 26 |
-| applicationId | Release：`com.kqcx.bikemap`；Debug：`com.kqcx.bikemap.debug` |
+| namespace | `com.kqcx.bikemap` |
+| Release applicationId | `com.kqcx.bikemap` |
+| Debug applicationId | `com.kqcx.bikemap.debug` |
+| 地图 | osmdroid Android 6.1.18 |
+| 二维码 | ZXing Core 3.4.1 |
+| AndroidX | Core 1.13.1、Activity 1.10.1 |
+| 网络 | `HttpURLConnection`，车辆接口为 HTTPS |
 
-版本号和构建号保存在根目录 `version.properties`。成功执行 `assembleDebug`、`assembleRelease`、`bundleDebug` 或 `bundleRelease` 后，下一次构建号自动加一。
+依赖声明统一放在 `app/build.gradle.kts`。新增依赖前先确认必要性、许可证、体积和构建影响。
 
-## 构建
+## 3. 工程结构
+
+```text
+app/src/main/java/com/kqcx/bikemap/    # Java 源码
+app/src/main/res/                      # 布局、字符串、颜色、图标
+app/src/main/assets/                   # 运行时编号目录
+tools/                                 # 维护脚本
+docs/developer-data/vehicle-number/    # 可公开的统计摘要
+docs/release-notes/                    # 发布说明
+LICENSES/                              # 第三方许可证文本
+```
+
+`MainActivity` 已超过 4000 行，集中承载地图、列表、设置、提醒和二维码流程。修改前应通读相关调用链，不做与任务无关的大范围重排或搬迁。
+
+## 4. 版本与构建
+
+### 4.1 版本规则
+
+版本号和构建号保存在根目录 `version.properties`。例如 `2.1.1` 首次发布构建时应为：
+
+```properties
+versionName=2.1.1
+buildNumberFor=2.1.1
+buildNumber=1
+```
+
+`versionCode` 计算规则：
+
+```text
+主版本 × 100000
++ 小版本 × 1000
++ 补丁号 × 100
++ 构建号
+```
+
+约束：
+
+- 主版本、小版本、补丁号均为数字。
+- 小版本、补丁号范围 `0..99`。
+- 构建号范围 `1..99`。
+- 完整 `versionName` 变化时，构建号从 `1` 重计。
+- 同一版本内构建号递增。
+- `buildNumberFor` 保存当前完整版本轨道，例如 `2.1.1`。
+
+示例：`2.1.1` 首次构建为 `versionCode=201101`。
+
+成功执行 `assembleDebug`、`assembleRelease`、`bundleDebug` 或 `bundleRelease` 后，构建流程会把下一构建号写回 `version.properties`。这是构建溯源，不得回退。
+
+### 4.2 构建命令
 
 ```powershell
 $env:JAVA_HOME = "<JDK 17+ 路径>"
 $env:ANDROID_HOME = "<Android SDK 路径>"
 
+.\gradlew.bat :app:lintDebug
 .\gradlew.bat :app:assembleDebug
 .\gradlew.bat :app:assembleRelease
 ```
 
-Release 签名依赖本地 `keystore.properties`（`storeFile`、`storePassword`、`keyAlias`、`keyPassword`、`storeType`）。该文件和签名文件不进入仓库。
-
-构建变体：
+### 4.3 构建变体
 
 | 变体 | 用途 |
 |---|---|
@@ -35,9 +95,109 @@ Release 签名依赖本地 `keystore.properties`（`storeFile`、`storePassword`
 | `release` | 正式发布，启用 R8 和资源裁剪，使用 Release 签名 |
 | `releasePlain` | 仅供本地对比，不用于发布 |
 
-## 验证
+### 4.4 签名与合规资产
 
-当前仓库没有完整的单元测试或仪器测试套件。修改后至少执行：
+- Release 签名从本地 `keystore.properties` 读取。
+- `keystore.properties`、签名文件、`local.properties` 和本机凭据不得进入仓库。
+- `prepareLegalAssets` 会把 `LICENSE`、`LICENSES/` 和 `THIRD_PARTY_NOTICES.md` 复制到 APK 的 `assets/legal/`。
+- `releasePlain` 与 `release` 同包名、同签名，但未压缩，只用于本地比对。
+
+## 5. 主要模块
+
+| 模块 | 职责 |
+|---|---|
+| `MainActivity` | 地图、车辆列表、详情、设置、编号输入和二维码入口 |
+| `AppMapView`、`MapLabelOverlay`、Callout 类 | 地图交互、标记和标签显示 |
+| `BikeRepository` | 车辆接口请求、JSON 解析、距离计算和请求链路隔离 |
+| `VehicleNumberCatalog` | 内置编号目录、尾号匹配和校园名解析 |
+| `LearnedVehicleNumberStore` | 本机编号与校园名自学习，最多 500 条 LRU |
+| `QrGalleryStore` | 二维码保存、所有权校验和延迟清理 |
+| `ReminderScheduler` 及相关类 | 提醒调度、补排和前台倒计时通知 |
+| `VehicleAlertService` | 车辆预警后台检测和通知 |
+| `DiagnosticLog`、`BikeMapApplication` | 本机诊断日志和未捕获异常兜底 |
+
+### 5.1 车辆查询
+
+- `BikeRepository` 使用单线程 executor，避免多请求链路互相抢占。
+- 两类接口统一校验信封错误；服务端 `resultMsg` 经 `safeServiceMessage` 过滤后再展示。
+- `cancelPending()` 用于结束旧链路并换用新 executor，旧回调由调用方的 generation 忽略。
+- 完整 9 位编号不依赖目录命中，始终可进入 `queryOneCar`。
+- 3–4 位尾号匹配依赖内置目录。
+- 选中已定位车辆并移动镜头后，在地图动画结束并等待落点稳定后按最终视口刷新顶部统计；连续查询失败后再选择列表车辆时，不保留上一次错误文案。
+
+### 5.2 车辆预警
+
+- 定位精度不超过 50 米时，按当前位置 100 米内可用车辆统计。
+- 少于 3 辆时触发提醒，恢复到 4 辆以上时解除。
+- 接口返回满 20 辆且疑似低库存时，追加四个偏移点查询，合并结果缓存 60 秒。
+- 单次检查链路总预算 30 秒。
+- 链路启动时保留覆盖预算的兜底闹钟；正常结束后由下一次检查覆盖。
+- 超时按已获得的最佳统计结果结束，迟到的旧回调按 generation 忽略。
+- 警告通知被用户或系统移除时，冷却状态失效，下一次同状态检查重新发布。
+
+### 5.3 提醒
+
+- 到点投递由系统精确闹钟触发。
+- `ReminderForegroundService` 只显示倒计时通知，不承担到点投递。
+- Android 12 及以上需要精确闹钟权限，Android 13 及以上需要通知权限。
+- 设备重启或覆盖安装后只补排未结束的提醒。
+- 应用在后台、锁屏或息屏时只发送系统通知，不拉起界面。
+
+### 5.4 编号目录与自学习
+
+- 运行时目录来自 `app/src/main/assets/vehicle_number_catalog.json`，由 `tools/generate_vehicle_number_catalog.py` 生成，勿手改。
+- 多个 `--input` 按批次时间顺序传入，后传入批次覆盖同一编号的校园归属。
+- `seed` 只在某 6 位号段唯一对应一个校园时用于补全。
+- 目录在后台线程解析，解析完成后再替换占位目录。
+- 自学习项只补未知编号；内置目录优先。
+- 自学习项保存在 `app_settings` 的 `learned_vehicle_numbers`，最多 500 条 LRU；关闭“保留最近车辆编号”或清除记录时删除。
+
+### 5.5 二维码
+
+- `QrGalleryStore` 只删除本应用创建、通过所有权校验的精确对象。
+- 二维码默认 30 秒后删除；进程中断后下次启动继续清理。
+- 不按编号模糊查找删除，不删除整个 `Pictures/BikeMap/` 目录。
+
+## 6. 数据与隐私
+
+- Android 定位结果为 WGS-84，地图显示和车辆查询前转换为 GCJ-02。
+- 查询附近车辆时，地图中心坐标发送至第三方接口。
+- 按编号查询单车时，车辆编号和查询坐标发送至第三方接口。
+- 地图瓦片由高德开放平台加载。
+- 提醒设置、最近车辆编号和待清理记录仅保存在本机。
+- 车辆预警开启且计时运行时，会按设定间隔定位并查询附近车辆。
+- 不保存历史轨迹，不把定位或车辆查询数据发送到未披露服务。
+
+公开数据边界：
+
+- `app/src/main/assets/vehicle_number_catalog.json` 随 APK 分发，包含编号补全所需映射。
+- `docs/developer-data/vehicle-number/` 只保留统计摘要。
+- 完整车辆编号明细不提交公开仓库，由 `.gitignore` 排除。
+
+## 7. 诊断日志
+
+- 入口：「关于 → 问题排查」。
+- 存储：`filesDir/diagnose/`。
+- `event.log` 与 `event.log.1` 每个文件硬上限 256 KB。
+- 单条事件记录上限 64 KB，过长消息和堆栈会截断并写入截断标记。
+- `crash-<时间戳>.txt` 保留最近 5 份，每份硬上限 512 KB。
+- 导出报告流式写入 `cacheDir/diagnose-export/`，最多保留 3 份。
+- 日志写入同步完成；导出报告在后台线程生成，完成后回到主线程调起系统分享。
+- `FileProvider` 只暴露 `diagnose-export/` 一个缓存根。
+- 日志不联网、不上传，并排除在云备份和换机迁移之外。
+- `allowBackup=false`，`backup_rules.xml` 和 `data_extraction_rules.xml` 全量排除诊断数据。
+- `proguard-rules.pro` 当前为空；若将来加入日志裁剪规则，不得连带裁掉 `DiagnosticLog`。
+
+脱敏红线：
+
+- 常规事件日志不主动记录坐标、完整车辆编号、凭据或用户输入。
+- 应用自行记录的车辆编号最多保留后三位。
+- 崩溃堆栈和第三方错误文本只做基础过滤，不保证不含数字或其他敏感内容。
+- 新增日志点前必须确认内容安全。
+
+## 8. 验证
+
+当前仓库没有完整自动化测试套件。修改后至少执行：
 
 ```powershell
 .\gradlew.bat :app:lintDebug
@@ -45,112 +205,53 @@ Release 签名依赖本地 `keystore.properties`（`storeFile`、`storePassword`
 .\gradlew.bat :app:assembleRelease
 ```
 
-涉及地图、定位、二维码相册、通知、提醒、车辆预警或前台服务时，还需要真机验证：
+涉及以下功能时，必须补充模拟器或真机验证：
 
-- 定位授权、拒绝授权和设置页返回。
-- 二维码保存、分享、30 秒清理及应用重启后的续清理。
-- 提醒倒计时、锁屏通知、后台存活、权限撤销后的恢复，以及设备重启/覆盖安装后的补排。
-- 车辆预警开关、检测计时、后台定位和通知送达。
-- 浅色、深色、小屏和大字体布局。
+| 功能 | 重点 |
+|---|---|
+| 定位与地图 | 授权、拒绝、设置页返回、前后台切换 |
+| 编号查询 | 完整编号、尾号匹配、目录外编号、失败回退 |
+| 二维码 | 保存、分享、30 秒清理、应用重启后的续清理 |
+| 提醒 | 倒计时、锁屏通知、后台存活、权限撤销、重启补排 |
+| 车辆预警 | 开关、计时、后台定位、通知送达、通知补发 |
+| 设置与主题 | 浅色、深色、跟随系统、大字体、小屏/大屏 |
+| 诊断日志 | 导出、详细模式、清除、文件边界 |
 
-编译成功不等于功能验证完成；验证结果应区分已测试项、未测试项和环境限制。
+编译成功不等于功能完成。无法执行真机验证时，必须写明未验证项目、原因和风险。
 
-## 工程结构
-
-```text
-app/src/main/java/com/kqcx/bikemap/    # 主程序
-app/src/main/res/                      # 布局、字符串、颜色、图标
-app/src/main/assets/                   # 运行时数据
-tools/                                 # 维护脚本（如车辆编号目录生成器）
-docs/developer-data/vehicle-number/    # 可供维护者使用的统计摘要
-LICENSES/                              # 第三方许可证文本
-```
-
-主要模块：
-
-- `MainActivity`：主页面、地图、车辆详情、设置和二维码流程。选中已定位车辆并移动镜头后，在地图动画结束并等待落点稳定后按最终视口刷新顶部统计；连续查询失败后再选择列表中的车辆时，不保留上一次错误文案。
-- `BikeRepository`：车辆接口请求、JSON 解析和距离计算。
-  - 两类查询统一走 `throwIfEnvelopeError`：接口信封 `errorCode` 非 0 时，透传服务端 `resultMsg`（经 `safeServiceMessage` 校验，缺失或不安全时回落通用提示）。
-- `VehicleNumberCatalog`：车辆编号索引与尾号匹配。内置目录来自
-  `app/src/main/assets/vehicle_number_catalog.json`（schema 含 `version`、
-  `updatedAt`、`sites`、`seed`、`numbers`），并合并 `LearnedVehicleNumberStore`
-  的本地自学习项；内置编号优先，学习项只补未知。目录在后台线程解析
-  （`MainActivity.loadVehicleNumberCatalogAsync`），先用空目录占位，解析完成后再替换，
-  避免目录变大时卡住启动；解析失败则保持空目录，仅编号补全不可用。已被内置目录覆盖的
-  学习项会在加载时清除，避免将来内置编号被删除后由陈旧学习项“复活”。
-  完整 9 位编号不依赖目录命中，始终可直接进入 `queryOneCar`；目录只负责尾号匹配和校园名补全。
-- `LearnedVehicleNumberStore`：本地自学习层。按编号点名查到车后记录“编号→校园名”，
-  存在 `app_settings` 的 `learned_vehicle_numbers`，最多 500 条（LRU），
-  关闭“保留最近车辆编号”或清除记录时删除，不联网上传。
-- `QrGalleryStore`：二维码保存、所有权校验和延迟清理。
-- `ReminderScheduler`、`ReminderReceiver`、`ReminderRescheduleReceiver`、`ReminderForegroundService`：
-  精确闹钟到点投递、设备重启/覆盖安装补排，以及前台倒计时通知；前台服务不承担到点触发。
-- `VehicleAlertService`：车辆预警后台检测与通知；定位精度不超过 50 米时，
-  按当前位置 100 米内可用车辆少于 3 辆触发，恢复到 4 辆以上解除；
-  接口返回满 20 辆且疑似低库存时，追加四个偏移点查询后再判定，合并结果缓存 60 秒。
-  单次检查链路总预算 30 秒，启动链路时保留覆盖预算的兜底闹钟；超时按已获得的最佳
-  统计结果结束，迟到的旧回调按 generation 忽略。
-  警告通知被用户或系统移除时冷却状态失效，下一次同状态检查会重新发布通知。
-- `DiagnosticLog`、`BikeMapApplication`：本机诊断日志与未捕获异常兜底；事件骨架常开，
-  详细日志按需打开，「关于」页负责导出。
-
-## 数据与隐私
-
-- Android 定位结果为 WGS-84，地图显示和车辆查询前转换为 GCJ-02。
-- 车辆查询会将地图中心坐标发送至第三方数据接口；按编号查询单车（`v2.0.0/queryOneCar`）会发送车辆编号与查询坐标；地图瓦片由高德开放平台加载。
-- 车辆位置和状态由第三方接口提供，可能存在延迟、偏差或缺失。
-- 提醒设置、最近车辆编号和待清理记录仅保存在设备本地。
-- 运行时 `app/src/main/assets/vehicle_number_catalog.json` 包含编号补全所需的映射，随 APK 分发。
-- 该目录由 `tools/generate_vehicle_number_catalog.py` 从各批次扫描明细生成，勿手改。多个 `--input` 按批次时间顺序传入，后传入的批次覆盖同一编号的校园归属（车辆可能在校园间调动）：
-  `py tools/generate_vehicle_number_catalog.py --input <批次明细.csv> --input <更晚批次明细.csv> --updated-at <日期> --output app/src/main/assets/vehicle_number_catalog.json`。
-  当前资产由 2026-09-27 至 2026-10-10 共五批扫描的并集生成，含 5,312 个编号、8 个接口站点（含站点 68 江西科技师范大学（枫林校区））。用 `--check` 校验已提交资产是否最新。`seed` 是号段级兜底：仅当某 6 位号段唯一对应一个校园时才用于补全，多校园共享的号段不猜。
-- `docs/developer-data/vehicle-number/` 的公开摘要当前记录最新单次验证扫描（4,289 辆、8 个接口站点），不等于运行时目录的五批并集（5,312 个编号、8 个接口站点）。
-- `docs/developer-data/vehicle-number/` 仅保留统计摘要。完整明细不提交到公开仓库，并由 `.gitignore` 的通用规则排除。
-- 不提交 `keystore.properties`、签名文件、`local.properties`、构建缓存或本地凭据。
-
-## 诊断日志
-
-- 入口：「关于 → 问题排查」。「导出诊断日志」把事件日志与崩溃记录合成一份文本后走系统
-  分享；「详细诊断日志」开关控制是否记录更细的内容；「清除诊断日志」删除本机事件日志、
-  崩溃记录和导出报告，不改变详细日志开关状态。
-- 存储：`filesDir/diagnose/`，`event.log` 与 `event.log.1` 每个文件硬上限为 256 KB；
-  单条事件记录上限 64 KB，过长消息和堆栈会截断并写入截断标记。
-- `crash-<时间戳>.txt` 保留最近 5 份，单个崩溃文件硬上限为 512 KB；超长堆栈会截断。
-  导出的合成报告流式写入 `cacheDir/diagnose-export/`，最多保留 3 份，不再整份驻留内存。
-- FileProvider：authority `${applicationId}.fileprovider`；`res/xml/file_paths.xml`
-  只开 `diagnose-export/` 一个根，多一个根就多一份被其他应用读到的可能。
-- 日志写入同步完成，不走异步队列：崩溃前最后几条不能丢，而那恰恰是最有价值的一段；
-  导出报告在后台线程生成，完成后回到主线程调起系统分享。
-- 挂接点：`BikeMapApplication.onCreate` 装 `Thread.setDefaultUncaughtExceptionHandler`
-  （链式调用原 handler，不改变系统原有的崩溃行为）；其余日志统一走
-  `DiagnosticLog.event/detail/warn/error`，不要再直接调用 `android.util.Log`。
-- **脱敏红线**：新增日志点不得主动记录坐标、完整车辆编号、凭据或用户输入；应用自行拼接的
-  编号最多记后三位。接口错误文本会经过 `safeServiceMessage` 的基础过滤，但该过滤不移除数字，
-  不能把第三方返回消息视为完全脱敏，写入日志前必须再确认内容安全。
-- 备份：`allowBackup=false`，且 `backup_rules.xml`、`data_extraction_rules.xml` 已全量
-  排除，诊断日志不会随云备份或换机迁移离开设备。
-- `proguard-rules.pro` 目前为空，R8 不会移除日志调用；若将来加入
-  `-assumenosideeffects class android.util.Log`，注意不要连带裁掉 `DiagnosticLog`。
-
-## 发布
-
-- 发布包必须使用正式 Release 签名。
-- 签名身份自 1.0.2 起为当前证书；1.0.1 及更早是旧证书，不能覆盖安装，必须先卸载。
-  2.0.0 及之后的正式版共用同一签名，可以直接覆盖升级，本机设置与记录保留。
-- `versionCode` = `主版本 × 100,000 + 小版本 × 1,000 + 补丁号 × 100 + 构建号`
-  （见 `app/build.gradle.kts`）。构建号按完整“主版本.小版本.补丁号”轨道从 1 重置，
-  同一版本内递增，versionCode 保持单调递增；`version.properties` 的 `buildNumberFor`
-  保存当前轨道（如 `2.1.1`），主版本、小版本或补丁号变化时从 1 重计。
-  上限：构建号 99、补丁号 99、小版本 99，越界直接构建失败；debug 与 release 共用同一套编号。
-- 发布 APK 时，应在 GitHub Release 同时提供对应源码或源码链接。
-- 本应用原创代码按 AGPL-3.0 授权；第三方组件与参考项目继续遵循各自许可证。
+## 9. 发布
 
 发布前检查：
 
-- `version.properties` 的版本号与 Release 说明一致。
-- 使用正式签名，并通过 `apksigner` 校验。
-- `LICENSE`、`LICENSES/` 和 `THIRD_PARTY_NOTICES.md` 已进入 APK 的 `assets/legal/`。
+- `version.properties` 与 Release notes 一致。
+- 使用正式 Release 签名。
+- `apksigner` 校验通过，并记录 APK 路径、版本号、文件大小、SHA-256 和证书摘要。
+- `LICENSE`、`LICENSES/` 和 `THIRD_PARTY_NOTICES.md` 已进入 `assets/legal/`。
 - README、PRIVACY、Release notes 与实际行为一致。
-- Release notes 写清升级要求：1.0.1 及更早需先卸载旧版，2.0.0 及之后可直接覆盖升级。
-- Release 标签对应正确的构建源码提交。
-- 记录 APK 文件名、大小和 SHA-256。
+- Release notes 写清升级要求。
+- Release 标签指向实际构建 APK 的源码提交。
+- 构建后递增的 `version.properties` 与 Release 标签分开处理。
+
+当前签名口径：
+
+- `1.0.1` 及更早为旧证书，必须先卸载。
+- `2.0.0` 及之后共用当前证书，可直接覆盖升级并保留本机数据。
+
+## 10. 维护同步清单
+
+| 变更类型 | 需要同步 |
+|---|---|
+| 用户可见功能或文案 | `README.md`、`strings.xml` |
+| 权限、网络或数据行为 | `PRIVACY.md`、`AndroidManifest.xml` |
+| 第三方组件或服务 | `THIRD_PARTY_NOTICES.md`、`LICENSES/` |
+| 版本号或构建规则 | `version.properties`、Release notes、应用内更新日志 |
+| 诊断日志格式或边界 | `PRIVACY.md`、本文档 |
+| 车辆编号数据 | 运行时目录、开发者数据摘要 |
+| 发布物 | APK、Release notes、源码标签、哈希记录 |
+
+## 11. 已知限制
+
+- 车辆位置、状态和编号数据来自第三方接口，可能延迟、偏差或缺失。
+- 部分 Android 版本可能限制后台启动定位前台服务，车辆预警会安全暂停。
+- 不同设备的后台限制、通知渠道、锁屏和横幅策略可能影响提醒展示。
+- 当前没有完整自动化测试套件。
