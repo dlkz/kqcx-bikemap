@@ -38,6 +38,16 @@
                 android:textColor="@color/text_primary"
                 android:textSize="22sp"
                 android:textStyle="bold" />
+
+            <ImageButton
+                android:id="@+id/btnFinderRefresh"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/finder_refresh_position"
+                android:padding="12dp"
+                android:src="@drawable/ic_refresh"
+                android:tint="@color/map_control_icon" />
         </LinearLayout>
 
         <View
@@ -137,12 +147,20 @@
                 <TextView
                     android:id="@+id/tvFinderHint"
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
+                    android:layout_height="112dp"
                     android:layout_marginTop="20dp"
+                    android:autoSizeMaxTextSize="13sp"
+                    android:autoSizeMinTextSize="9sp"
+                    android:autoSizeStepGranularity="1sp"
+                    android:autoSizeTextType="uniform"
                     android:background="@drawable/bg_input"
-                    android:lineSpacingExtra="3dp"
+                    android:gravity="center"
+                    android:includeFontPadding="false"
+                    android:lineSpacingExtra="2dp"
+                    android:maxLines="6"
                     android:padding="14dp"
                     android:text="@string/finder_hint_map_estimate"
+                    android:textAlignment="center"
                     android:textColor="@color/text_secondary"
                     android:textSize="13sp" />
 

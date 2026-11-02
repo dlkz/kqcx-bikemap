@@ -49,4 +49,113 @@ public final class VehicleFinderMathTest {
                 120_000L
         ));
     }
+
+    @Test
+    public void gradesAccuracyWithoutFlickeringAtBoundaries() {
+        assertEquals(
+                VehicleFinderMath.ACCURACY_UNKNOWN,
+                VehicleFinderMath.accuracyQuality(0f, VehicleFinderMath.ACCURACY_MODERATE)
+        );
+        assertEquals(
+                VehicleFinderMath.ACCURACY_GOOD,
+                VehicleFinderMath.accuracyQuality(35f, VehicleFinderMath.ACCURACY_UNKNOWN)
+        );
+        assertEquals(
+                VehicleFinderMath.ACCURACY_GOOD,
+                VehicleFinderMath.accuracyQuality(45f, VehicleFinderMath.ACCURACY_GOOD)
+        );
+        assertEquals(
+                VehicleFinderMath.ACCURACY_MODERATE,
+                VehicleFinderMath.accuracyQuality(46f, VehicleFinderMath.ACCURACY_GOOD)
+        );
+        assertEquals(
+                VehicleFinderMath.ACCURACY_MODERATE,
+                VehicleFinderMath.accuracyQuality(80f, VehicleFinderMath.ACCURACY_UNKNOWN)
+        );
+        assertEquals(
+                VehicleFinderMath.ACCURACY_MODERATE,
+                VehicleFinderMath.accuracyQuality(90f, VehicleFinderMath.ACCURACY_MODERATE)
+        );
+        assertEquals(
+                VehicleFinderMath.ACCURACY_POOR,
+                VehicleFinderMath.accuracyQuality(91f, VehicleFinderMath.ACCURACY_MODERATE)
+        );
+        assertEquals(
+                VehicleFinderMath.ACCURACY_POOR,
+                VehicleFinderMath.accuracyQuality(70f, VehicleFinderMath.ACCURACY_POOR)
+        );
+        assertEquals(
+                VehicleFinderMath.ACCURACY_MODERATE,
+                VehicleFinderMath.accuracyQuality(69f, VehicleFinderMath.ACCURACY_POOR)
+        );
+        assertEquals(
+                VehicleFinderMath.ACCURACY_GOOD,
+                VehicleFinderMath.accuracyQuality(29f, VehicleFinderMath.ACCURACY_MODERATE)
+        );
+    }
+
+    @Test
+    public void bucketsAccuracyForStableDisplay() {
+        assertEquals(40, VehicleFinderMath.bucketAccuracyMeters(
+                36f,
+                VehicleFinderMath.ACCURACY_MODERATE
+        ));
+        assertEquals(80, VehicleFinderMath.bucketAccuracyMeters(
+                80f,
+                VehicleFinderMath.ACCURACY_MODERATE
+        ));
+        assertEquals(100, VehicleFinderMath.bucketAccuracyMeters(
+                81f,
+                VehicleFinderMath.ACCURACY_POOR
+        ));
+        assertEquals(150, VehicleFinderMath.bucketAccuracyMeters(
+                120f,
+                VehicleFinderMath.ACCURACY_POOR
+        ));
+    }
+
+    @Test
+    public void roundsDistanceAccordingToLocationQuality() {
+        assertEquals(5, VehicleFinderMath.approximateDistanceMeters(
+                4f,
+                VehicleFinderMath.ACCURACY_GOOD
+        ));
+        assertEquals(60, VehicleFinderMath.approximateDistanceMeters(
+                63f,
+                VehicleFinderMath.ACCURACY_MODERATE
+        ));
+        assertEquals(600, VehicleFinderMath.approximateDistanceMeters(
+                597f,
+                VehicleFinderMath.ACCURACY_POOR
+        ));
+    }
+
+    @Test
+    public void onlyReliableAccuracyCanConfirmNearTarget() {
+        assertTrue(VehicleFinderMath.isReliableNearTarget(5f, 8f));
+        assertTrue(VehicleFinderMath.isReliableNearTarget(15f, 20f));
+        assertFalse(VehicleFinderMath.isReliableNearTarget(5f, 30f));
+        assertFalse(VehicleFinderMath.isReliableNearTarget(20f, 8f));
+        assertFalse(VehicleFinderMath.isReliableNearTarget(5f, 0f));
+    }
+
+    @Test
+    public void classifiesVehicleUploadAge() {
+        assertEquals(
+                VehicleFinderMath.TARGET_UNKNOWN,
+                VehicleFinderMath.targetFreshness(false, 0L)
+        );
+        assertEquals(
+                VehicleFinderMath.TARGET_FRESH,
+                VehicleFinderMath.targetFreshness(true, 10L * 60L * 1_000L)
+        );
+        assertEquals(
+                VehicleFinderMath.TARGET_AGING,
+                VehicleFinderMath.targetFreshness(true, 10L * 60L * 1_000L + 1L)
+        );
+        assertEquals(
+                VehicleFinderMath.TARGET_STALE,
+                VehicleFinderMath.targetFreshness(true, 60L * 60L * 1_000L + 1L)
+        );
+    }
 }
