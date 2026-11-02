@@ -107,6 +107,10 @@
     <string name="permission_not_now">暂不授权</string>
     <string name="list_title">选择车辆</string>
     <string name="list_subtitle">%1$d 辆车 · 按距离排序</string>
+    <string name="vehicle_list_show_all">查看全部</string>
+    <string name="vehicle_list_collapse">收起</string>
+    <string name="vehicle_list_subtitle_cards">%1$d 辆车 · 左右滑动选择</string>
+    <string name="action_locate">定位</string>
     <string name="input_title">输入车辆编号</string>
     <string name="input_subtitle">选择校园和号段输入尾号，或直接输入完整编号</string>
     <string name="input_hint">尾号或完整编号</string>
@@ -128,7 +132,6 @@
     <string name="input_bike_lookup_in_progress">正在查询车辆位置，请稍候</string>
     <string name="number_candidates_title">选择车辆编号</string>
     <string name="confirm">确定</string>
-    <string name="action_view">查看</string>
     <string name="qr_dialog_title">车辆二维码 · %1$s</string>
     <string name="qr_clipboard_label">车辆二维码链接</string>
     <string name="map_tile_copyright">高德地图</string>
@@ -159,6 +162,9 @@
     <string name="settings_vehicle_display">车辆显示</string>
     <string name="settings_filter_unavailable">自动过滤不可用车辆</string>
     <string name="settings_filter_unavailable_desc">离线、停用或电量低的车辆将不显示</string>
+    <string name="settings_vehicle_list_mode">车辆列表默认样式</string>
+    <string name="vehicle_list_mode_map_cards">地图卡片</string>
+    <string name="vehicle_list_mode_half_list">半屏列表</string>
     <string name="settings_history">历史</string>
     <string name="settings_keep_history">保留最近车辆编号</string>
     <string name="settings_storage">存储</string>
@@ -246,7 +252,7 @@
     <string name="usage_notice_message">定位\n用于显示当前位置并查询附近车辆；拒绝后仍可手动输入车辆编号。\n\n文件与存储\nAndroid 8/9 保存二维码需要存储权限；二维码保存后 30 秒自动删除。\n\n提醒权限\n提醒功能会按需申请通知权限，并引导开启精确闹钟和后台运行设置；必要项未开启时，提醒可能无法准时送达。\n\n车辆预警\n高级设置里的车辆预警会在后台尽量按设定间隔定位并查询附近车辆，需要定位与通知权限，以及后台运行和自启动设置；功能或计时关闭后停止。\n\n本机记录\n默认保存最近 5 辆生成过二维码的车辆编号，可在设置中关闭并清除；按编号查到车辆时还会在本机记住其校园名，用于补全显示，不联网上传。\n\n网络请求\n查询车辆时会将地图中心坐标发送至第三方数据接口；地图瓦片由高德开放平台加载。</string>
     <string name="usage_notice_confirm">我知道了</string>
     <string name="credits_content">## 外部服务\n\n高德开放平台\n作者：高德软件有限公司\n链接：https://lbs.amap.com/\n\n快趣出行\n链接：https://www.kvcoogo.com/\n\n## 使用的开源组件\n\nosmdroid 6.1.18\n作者：osmdroid contributors\n许可：Apache-2.0\n链接：https://github.com/osmdroid/osmdroid\n\nZXing Core 3.4.1\n作者：ZXing Authors\n许可：Apache-2.0\n链接：https://github.com/zxing/zxing\n\nAndroidX 运行组件\n作者：Android Open Source Project\n许可：Apache-2.0\n链接：https://developer.android.com/jetpack/androidx\n\nKotlin 标准库与 Coroutines\n作者：JetBrains\n许可：Apache-2.0\n链接：https://github.com/JetBrains/kotlin\n\nGuava ListenableFuture 1.0\n作者：Google\n许可：Apache-2.0\n链接：https://github.com/google/guava\n\n## 参考项目\n\nKuaiqu_RemoteScan\n作者：Jiayi Li（Wuwang777）\n许可：MIT\n链接：https://github.com/Wuwang777/Kuaiqu_RemoteScan\n\nJUWP-Schedule\n作者：Inonvation\n许可：MIT\n链接：https://github.com/Inonvation/JUWP-Schedule\n\n## 开源协议\n本应用原创代码按 GNU Affero General Public License v3.0（AGPL-3.0）开放源代码，不附加额外使用限制。第三方组件按其各自许可证授权。完整许可文本随应用提供。</string>
-    <string name="privacy_content">定位\n用于显示当前位置和查询附近车辆，不保存历史轨迹。\n\n网络与第三方\n查询车辆时会将地图中心坐标发送至第三方数据接口；地图瓦片由高德开放平台加载。车辆预警功能和计时都开启后，应用会在后台尽量按设定间隔定位并查询附近车辆，坐标同样发送至上述第三方数据接口。相关数据由对应服务方处理。\n\n文件与存储\n二维码仅写入系统相册，并在 30 秒后尝试删除。\n\n提醒与车辆预警\n提醒设置仅保存在本机，到点由系统闹钟触发并发送系统通知；应用在前台时还会在应用内显示提示方块。提醒会按需申请通知权限，并引导开启精确闹钟和后台运行设置。车辆预警的功能开关和计时相互独立，两者都开启时才在后台运行，并需要通知和定位权限。\n\n本机设置\n主题、功能开关、提醒设置和最近车辆编号保存在本机，可在设置中清除最近车辆编号；按编号查到车辆后，应用会在本机记住该编号对应的校园名称，仅用于补全显示，不联网上传，关闭「保留最近车辆编号」时一并清除。地图瓦片缓存保存在本机，可在「存储」中清除。</string>
+    <string name="privacy_content">定位\n用于显示当前位置和查询附近车辆，不保存历史轨迹。\n\n网络与第三方\n查询车辆时会将地图中心坐标发送至第三方数据接口；地图瓦片由高德开放平台加载。车辆预警功能和计时都开启后，应用会在后台尽量按设定间隔定位并查询附近车辆，坐标同样发送至上述第三方数据接口。相关数据由对应服务方处理。\n\n文件与存储\n二维码仅写入系统相册，并在 30 秒后尝试删除。\n\n提醒与车辆预警\n提醒设置仅保存在本机，到点由系统闹钟触发并发送系统通知；应用在前台时还会在应用内显示提示方块。提醒会按需申请通知权限，并引导开启精确闹钟和后台运行设置。车辆预警的功能开关和计时相互独立，两者都开启时才在后台运行，并需要通知和定位权限。\n\n本机设置\n主题、车辆列表样式、功能开关、提醒设置和最近车辆编号保存在本机，可在设置中清除最近车辆编号；按编号查到车辆后，应用会在本机记住该编号对应的校园名称，仅用于补全显示，不联网上传，关闭「保留最近车辆编号」时一并清除。地图瓦片缓存保存在本机，可在「存储」中清除。</string>
     <string name="qr_saved">二维码已保存到相册，30 秒后自动删除</string>
     <string name="qr_generate_failed">二维码生成失败，请稍后重试</string>
     <string name="qr_save_failed">二维码保存失败，请检查系统权限或存储空间</string>

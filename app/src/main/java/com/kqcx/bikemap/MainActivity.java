@@ -2,6 +2,7 @@ package com.kqcx.bikemap;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
+import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
@@ -33,12 +34,14 @@ import android.provider.Settings;
 import androidx.core.app.NotificationManagerCompat;
 import android.text.Editable;
 import android.text.InputFilter;
+import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.text.method.LinkMovementMethod;
 import android.text.util.Linkify;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.LayoutInflater;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
@@ -46,6 +49,7 @@ import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -101,6 +105,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private static final long MARKER_TAP_GUARD_MS = 700L;
     private static final long MAP_CENTER_REFRESH_DELAY_MS = 700L;
     private static final long RECENTER_ANIMATION_MS = 700L;
+    private static final long VEHICLE_LIST_ANIMATION_MS = 220L;
     /**
      * 动画本身只跑 RECENTER_ANIMATION_MS，再多等一小段用于校验落点：
      * 动画被打断或最后一帧没落到目标点时，地图会停在半路并错误地弹出
@@ -122,6 +127,14 @@ public final class MainActivity extends BaseActivity implements LocationListener
      * 逻辑要一直等到收到比这次点击更新的定位为止，最长等待该时长。
      */
     private static final long RECENTER_FRESH_FIX_TIMEOUT_MS = 60_000L;
+    /** 新旧定位时间差小于该值时，视为同一时刻的定位。 */
+    private static final long LOCATION_TIMESTAMP_TOLERANCE_MS = 1_000L;
+    /** network 定位要覆盖当前 GPS 定位，至少需要新这么多。 */
+    private static final long LOCATION_SIGNIFICANTLY_NEWER_MS = 10_000L;
+    /** GPS 在该窗口内仍视为新鲜，network 定位不能覆盖它。 */
+    private static final long LOCATION_GPS_FRESH_WINDOW_MS = 15_000L;
+    /** 精度差超过该值时，旧定位不能覆盖当前定位。 */
+    private static final float LOCATION_ACCURACY_MARGIN_METERS = 50.0f;
     /**
      * The 512-pixel tile source doubles the pixel scale of a classic 256-pixel
      * source, so 16.0 keeps roughly the same view span as the old 17.0 setting.
@@ -142,6 +155,9 @@ public final class MainActivity extends BaseActivity implements LocationListener
      * 地图列表过滤共享。车辆预警不再复用此开关。
      */
     private static final String PREF_FILTER_UNAVAILABLE = "filter_unavailable";
+    private static final String PREF_VEHICLE_LIST_MODE = "vehicle_list_mode";
+    private static final int VEHICLE_LIST_MODE_MAP_CARDS = 0;
+    private static final int VEHICLE_LIST_MODE_HALF_LIST = 1;
     private static final String PREF_VEHICLE_ALERT_ENABLED = "vehicle_alert_enabled";
     private static final String PREF_VEHICLE_ALERT_INTERVAL = "vehicle_alert_interval_seconds";
     private static final String PREF_VEHICLE_ALERT_AUTOSTART_PROMPTED = "vehicle_alert_autostart_prompted";
@@ -232,7 +248,15 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private TextView tvManualNotice;
     private TextView tvSettingsVersion;
     private TextView tvVehicleAlertStatus;
+    private TextView tvVehicleListSubtitle;
+    private TextView btnVehicleListExpand;
+    private TextView tvVehicleListModeSummary;
     private LinearLayout bikePanel;
+    private LinearLayout vehicleListPanel;
+    private LinearLayout vehicleCardsRow;
+    private LinearLayout vehicleListRows;
+    private HorizontalScrollView vehicleListCardScroll;
+    private ScrollView vehicleListScroll;
     private View settingsPanel;
     private Button btnShowQr;
     private ImageButton btnRefresh;
@@ -270,6 +294,8 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private int lastNearbyRawCount;
     private long lastMarkerTapAt;
     private int systemBarsBottom;
+    private ValueAnimator vehicleListAnimator;
+    private boolean vehicleListExpanded;
     private String pendingQrNumber = "";
     private Bitmap pendingQrBitmap;
     private boolean pendingOpenWeChatAfterQrSave;
@@ -293,6 +319,8 @@ public final class MainActivity extends BaseActivity implements LocationListener
      * 更新的定位；此时即使固定跟随窗口到期，也要继续跟随，直到新定位到达或超时。
      */
     private long recenterAwaitFixSinceElapsedMs;
+    /** 防止旧的落点校验回调消费新一次居中状态。 */
+    private int recenterGeneration;
     /**
      * 点名查车（按编号定位）优先于自身定位跟随。置位后，居中落点校验和
      * 6 秒跟随窗口都不会把镜头从目标车拉回自身定位点，直到用户按“重新定位”
@@ -369,6 +397,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
         configureMap();
         setupClickListeners();
         setupSettings();
+        setupVehicleListPanel();
         updateReminderButtonState();
         applyVehicleAlertState();
         cleanupExpiredQrSaves();
@@ -382,6 +411,14 @@ public final class MainActivity extends BaseActivity implements LocationListener
                 }
                 if (settingsPanel.getVisibility() == View.VISIBLE) {
                     hideSettings();
+                    return;
+                }
+                if (vehicleListPanel.getVisibility() == View.VISIBLE) {
+                    if (vehicleListExpanded) {
+                        setVehicleListExpanded(false, true);
+                    } else {
+                        hideVehicleList();
+                    }
                     return;
                 }
                 if (bikePanel.getVisibility() == View.VISIBLE) {
@@ -438,6 +475,14 @@ public final class MainActivity extends BaseActivity implements LocationListener
         tvBikeFreshness = findViewById(R.id.tvBikeFreshness);
         tvManualNotice = findViewById(R.id.tvManualNotice);
         bikePanel = findViewById(R.id.bikePanel);
+        vehicleListPanel = findViewById(R.id.vehicleListPanel);
+        tvVehicleListSubtitle = findViewById(R.id.tvVehicleListSubtitle);
+        btnVehicleListExpand = findViewById(R.id.btnVehicleListExpand);
+        tvVehicleListModeSummary = findViewById(R.id.tvVehicleListModeSummary);
+        vehicleListCardScroll = findViewById(R.id.vehicleListCardScroll);
+        vehicleCardsRow = findViewById(R.id.vehicleListCardsRow);
+        vehicleListScroll = findViewById(R.id.vehicleListScroll);
+        vehicleListRows = findViewById(R.id.vehicleListRows);
         settingsPanel = findViewById(R.id.settingsPanel);
         tvSettingsVersion = findViewById(R.id.tvSettingsVersion);
         tvVehicleAlertStatus = findViewById(R.id.tvVehicleAlertStatus);
@@ -495,9 +540,11 @@ public final class MainActivity extends BaseActivity implements LocationListener
         View settingsHeader = findViewById(R.id.settingsHeader);
         View advancedHeader = findViewById(R.id.advancedHeader);
         View bottomArea = findViewById(R.id.bottomArea);
+        View vehicleListPanelView = findViewById(R.id.vehicleListPanel);
         int topBannerBaseMargin = dp(16);
         int settingsHeaderBaseHeight = dp(64);
         int bottomAreaBasePadding = dp(14);
+        int vehicleListBaseBottomMargin = dp(88);
 
         ViewCompat.setOnApplyWindowInsetsListener(root, (view, windowInsets) -> {
             Insets systemBars = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars());
@@ -517,6 +564,10 @@ public final class MainActivity extends BaseActivity implements LocationListener
                     bottomArea.getPaddingRight(),
                     bottomAreaBasePadding + systemBars.bottom
             );
+            ViewGroup.MarginLayoutParams listParams =
+                    (ViewGroup.MarginLayoutParams) vehicleListPanelView.getLayoutParams();
+            listParams.bottomMargin = vehicleListBaseBottomMargin + systemBars.bottom;
+            vehicleListPanelView.setLayoutParams(listParams);
             return windowInsets;
         });
         ViewCompat.requestApplyInsets(root);
@@ -571,21 +622,17 @@ public final class MainActivity extends BaseActivity implements LocationListener
                     double zoomLevelBeforeSequence,
                     org.osmdroid.api.IGeoPoint centerBeforeSequence
             ) {
-                // osmdroid runs its own double-tap zoom-in before the third tap is
-                // recognized, so always write an absolute target zoom here instead of
-                // relying on a relative zoom-out: otherwise a triple tap at the default
-                // zoom level would leave the map stuck one level in.
-                double targetZoom = zoomLevelBeforeSequence > DEFAULT_ZOOM
-                        ? zoomLevelBeforeSequence - 1.0
-                        : zoomLevelBeforeSequence;
-                // A double tap starts an animated zoom-in that keeps running after
-                // this callback, so it has to be cancelled first or it would overwrite
-                // the zoom level written below.
+                // The custom tap detector suppresses osmdroid's native double tap.
+                // Zoom out exactly one level from the recorded sequence start.
+                double targetZoom = Math.max(
+                        mapView.getMinZoomLevel(),
+                        zoomLevelBeforeSequence - 1.0
+                );
                 mapView.getController().stopAnimation(false);
-                mapView.getController().setZoom(targetZoom);
                 if (centerBeforeSequence != null) {
                     mapView.getController().setCenter(centerBeforeSequence);
                 }
+                mapView.getController().zoomTo(targetZoom);
             }
         });
         mapView.addMapListener(new MapListener() {
@@ -702,6 +749,13 @@ public final class MainActivity extends BaseActivity implements LocationListener
             // 立即按当前地图中心重查一次，让地图、列表和顶栏同步反映新设置。
             loadBikes(mapCenterGcj02(), true);
         });
+        updateVehicleListModeSummary(preferences.getInt(
+                PREF_VEHICLE_LIST_MODE,
+                VEHICLE_LIST_MODE_MAP_CARDS
+        ));
+        findViewById(R.id.rowVehicleListMode).setOnClickListener(
+                view -> showVehicleListModeDialog()
+        );
         switchQrUrl.setChecked(preferences.getBoolean(PREF_QR_SHOW_URL, false));
         switchQrCopy.setChecked(preferences.getBoolean(PREF_QR_COPY_ENABLED, false));
         switchQrUrl.setOnCheckedChangeListener((button, checked) ->
@@ -769,6 +823,96 @@ public final class MainActivity extends BaseActivity implements LocationListener
         rowAdvanced.setOnClickListener(view -> checkAdvanced.toggle());
         // 「高级选项」打开独立页面，不再在设置页内联展开。
         findViewById(R.id.rowAdvancedOptions).setOnClickListener(view -> showAdvancedPage());
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private void setupVehicleListPanel() {
+        findViewById(R.id.btnVehicleListClose).setOnClickListener(view -> hideVehicleList());
+        btnVehicleListExpand.setOnClickListener(
+                view -> setVehicleListExpanded(!vehicleListExpanded, true)
+        );
+
+        View dragHandle = findViewById(R.id.vehicleListDragHandle);
+        dragHandle.setOnClickListener(
+                view -> setVehicleListExpanded(!vehicleListExpanded, true)
+        );
+        dragHandle.setOnTouchListener(new View.OnTouchListener() {
+            private float downY;
+
+            @Override
+            public boolean onTouch(View view, MotionEvent event) {
+                if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                    downY = event.getY();
+                    return true;
+                }
+                if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+                    float delta = event.getY() - downY;
+                    if (delta < -dp(14)) {
+                        setVehicleListExpanded(true, true);
+                    } else if (delta > dp(14)) {
+                        setVehicleListExpanded(false, true);
+                    } else {
+                        view.performClick();
+                    }
+                    return true;
+                }
+                return event.getActionMasked() != MotionEvent.ACTION_CANCEL;
+            }
+        });
+
+        vehicleListCardScroll.setOnTouchListener((view, event) -> {
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                view.postDelayed(this::snapVehicleCardsToNearest, 180L);
+            }
+            return false;
+        });
+    }
+
+    private void showVehicleListModeDialog() {
+        String[] modes = {
+                getString(R.string.vehicle_list_mode_map_cards),
+                getString(R.string.vehicle_list_mode_half_list)
+        };
+        int current = normalizeVehicleListMode(appPreferences.getInt(
+                PREF_VEHICLE_LIST_MODE,
+                VEHICLE_LIST_MODE_MAP_CARDS
+        ));
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.settings_vehicle_list_mode)
+                .setSingleChoiceItems(modes, current, (dialog, which) -> {
+                    int mode = normalizeVehicleListMode(which);
+                    appPreferences.edit()
+                            .putInt(PREF_VEHICLE_LIST_MODE, mode)
+                            .apply();
+                    updateVehicleListModeSummary(mode);
+                    if (vehicleListPanel.getVisibility() == View.VISIBLE) {
+                        setVehicleListExpanded(
+                                mode == VEHICLE_LIST_MODE_HALF_LIST,
+                                true
+                        );
+                    }
+                    dialog.dismiss();
+                })
+                .setNegativeButton(R.string.cancel, null)
+                .show();
+    }
+
+    private int normalizeVehicleListMode(int mode) {
+        return mode == VEHICLE_LIST_MODE_HALF_LIST
+                ? VEHICLE_LIST_MODE_HALF_LIST
+                : VEHICLE_LIST_MODE_MAP_CARDS;
+    }
+
+    private void updateVehicleListModeSummary(int mode) {
+        if (tvVehicleListModeSummary == null) {
+            return;
+        }
+        tvVehicleListModeSummary.setText(
+                normalizeVehicleListMode(mode) == VEHICLE_LIST_MODE_HALF_LIST
+                        ? R.string.vehicle_list_mode_half_list
+                        : R.string.vehicle_list_mode_map_cards
+        );
     }
 
     /** 高级选项独立页面，与设置页同级；返回键先退出该页面。 */
@@ -1065,6 +1209,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     private void showSettings() {
+        hideVehicleList();
         updateMapCacheSizeLabel();
         settingsPanel.setVisibility(View.VISIBLE);
     }
@@ -2472,6 +2617,8 @@ public final class MainActivity extends BaseActivity implements LocationListener
         InfoWindow.closeAllInfoWindowsOn(mapView);
         if (settingsPanel.getVisibility() == View.VISIBLE) {
             hideSettings();
+        } else if (vehicleListPanel.getVisibility() == View.VISIBLE) {
+            hideVehicleList();
         } else if (bikePanel.getVisibility() == View.VISIBLE) {
             hideBikePanel();
         }
@@ -2587,6 +2734,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
                         filterUnavailableBikes();
                         mergeQueriedBike();
                         renderMap();
+                        refreshVehicleListIfVisible();
                         updateDataRefreshTime(fetchedAt);
                         finishLoadRequest();
                         updateViewportStatus();
@@ -2841,10 +2989,17 @@ public final class MainActivity extends BaseActivity implements LocationListener
                 RECENTER_ANIMATION_MS
         );
         loadBikes(target, true);
-        mapView.postDelayed(this::settleRecenter, RECENTER_SETTLE_DELAY_MS);
+        int generation = ++recenterGeneration;
+        mapView.postDelayed(
+                () -> settleRecenter(generation),
+                RECENTER_SETTLE_DELAY_MS
+        );
     }
 
-    private void settleRecenter() {
+    private void settleRecenter(int generation) {
+        if (generation != recenterGeneration) {
+            return;
+        }
         if (!recenterSettlePending) {
             return;
         }
@@ -2968,6 +3123,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
      *                  与点击地图标记时的原有行为一致。
      */
     private void showBikeDetail(Bike bike, boolean moveCamera, Double zoomLevel) {
+        hideVehicleList();
         selectedBike = bike;
         updateMarkerSelection();
         bikePanel.setVisibility(View.VISIBLE);
@@ -3009,29 +3165,33 @@ public final class MainActivity extends BaseActivity implements LocationListener
             marker.showInfoWindow();
         }
         if (moveCamera && bike.locationKnown) {
-            // 点名看车：镜头主动离开自身定位点，进入“车定位优先”态。取消已排期
-            // 的居中落点校验并关闭 6 秒跟随窗口，否则自身定位回调（或 950ms 的
-            // settleRecenter）会把镜头从目标车抢回自身定位点；同时抑制“偏离
-            // 自身定位”的中心指示针，避免误导。回到自身定位时该态会被清除。
-            vehicleFocusActive = true;
-            recenterSettlePending = false;
-            recenterInProgress = false;
-            recenterFollowUntilMs = 0L;
-            recenterAwaitFixSinceElapsedMs = 0L;
-            suppressCenterIndicator = true;
-            GeoPoint point = new GeoPoint(bike.latitude, bike.longitude);
-            if (zoomLevel == null) {
-                mapView.getController().animateTo(point);
-            } else {
-                mapView.getController().animateTo(
-                        point,
-                        zoomLevel,
-                        RECENTER_ANIMATION_MS
-                );
-            }
-            // 动画结束后按最终视口刷新顶栏，清除上一次查询留下的错误文案。
-            mapView.postDelayed(this::updateViewportStatus, RECENTER_SETTLE_DELAY_MS);
+            focusBikeOnMap(bike, zoomLevel);
         }
+    }
+
+    private void focusBikeOnMap(Bike bike, Double zoomLevel) {
+        if (!bike.locationKnown) {
+            return;
+        }
+        // 点名看车：镜头主动离开自身定位点，进入“车定位优先”态。取消已排期
+        // 的居中落点校验并关闭 6 秒跟随窗口，否则自身定位回调会抢回镜头。
+        vehicleFocusActive = true;
+        recenterSettlePending = false;
+        recenterInProgress = false;
+        recenterFollowUntilMs = 0L;
+        recenterAwaitFixSinceElapsedMs = 0L;
+        suppressCenterIndicator = true;
+        GeoPoint point = new GeoPoint(bike.latitude, bike.longitude);
+        if (zoomLevel == null) {
+            mapView.getController().animateTo(point);
+        } else {
+            mapView.getController().animateTo(
+                    point,
+                    zoomLevel,
+                    RECENTER_ANIMATION_MS
+            );
+        }
+        mapView.postDelayed(this::updateViewportStatus, RECENTER_SETTLE_DELAY_MS);
     }
 
     private void updateMarkerSelection() {
@@ -3060,97 +3220,131 @@ public final class MainActivity extends BaseActivity implements LocationListener
             return;
         }
 
-        Dialog dialog = new Dialog(this);
-        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
-
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setBackgroundResource(R.drawable.bg_sheet);
-        content.setPadding(dp(18), dp(14), dp(18), dp(18) + systemBarsBottom);
-        // 关闭按钮使用无边界水波纹，需放宽裁剪才能显示完整圆形。
-        content.setClipToPadding(false);
-
-        LinearLayout header = new LinearLayout(this);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setOrientation(LinearLayout.HORIZONTAL);
-        header.setClipChildren(false); // 同上：表头高度等于按钮，否则水波纹会被上下裁平
-
-        LinearLayout heading = new LinearLayout(this);
-        heading.setOrientation(LinearLayout.VERTICAL);
-        TextView title = textView(getString(R.string.list_title), 20, R.color.text_primary, true);
-        TextView subtitle = textView(
-                getString(R.string.list_subtitle, bikes.size()),
-                12,
-                R.color.text_secondary,
-                false
-        );
-        heading.addView(title);
-        heading.addView(subtitle);
-        header.addView(heading, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-
-        ImageButton close = new ImageButton(this);
-        close.setImageResource(R.drawable.ic_close);
-        TypedValue closeBackground = new TypedValue();
-        if (getTheme().resolveAttribute(
-                android.R.attr.selectableItemBackgroundBorderless,
-                closeBackground,
-                true
-        )) {
-            close.setBackground(getDrawable(closeBackground.resourceId));
-        }
-        close.setContentDescription(getString(R.string.close));
-        close.setPadding(dp(10), dp(10), dp(10), dp(10));
-        header.addView(close, new LinearLayout.LayoutParams(dp(42), dp(42)));
-        content.addView(header);
-        close.setOnClickListener(view -> dialog.dismiss());
-
-        ScrollView scrollView = new ScrollView(this);
-        scrollView.setFillViewport(false);
-        LinearLayout rows = new LinearLayout(this);
-        rows.setOrientation(LinearLayout.VERTICAL);
-        scrollView.addView(rows, new ScrollView.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
+        hideBikePanel();
+        renderVehicleList();
+        vehicleListPanel.setVisibility(View.VISIBLE);
+        int mode = normalizeVehicleListMode(appPreferences.getInt(
+                PREF_VEHICLE_LIST_MODE,
+                VEHICLE_LIST_MODE_MAP_CARDS
         ));
-
-        for (Bike bike : bikes) {
-            rows.addView(createBikeRow(bike, dialog));
-        }
-
-        int maxSheetHeight = Math.max(
-                dp(260),
-                getResources().getDisplayMetrics().heightPixels - dp(48)
-        );
-        int desiredSheetHeight = dp(108) + bikes.size() * dp(78);
-        int sheetHeight = Math.min(maxSheetHeight, Math.max(dp(260), desiredSheetHeight));
-        content.setLayoutParams(new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                sheetHeight
-        ));
-        LinearLayout.LayoutParams listParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                0,
-                1
-        );
-        listParams.topMargin = dp(10);
-        content.addView(scrollView, listParams);
-
-        dialog.setContentView(content);
-        Window window = dialog.getWindow();
-        if (window != null) {
-            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-            window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-            WindowManager.LayoutParams params = window.getAttributes();
-            params.width = WindowManager.LayoutParams.MATCH_PARENT;
-            params.height = sheetHeight;
-            params.gravity = Gravity.BOTTOM;
-            params.dimAmount = 0.3f;
-            window.setAttributes(params);
-        }
-        dialog.show();
+        setVehicleListExpanded(mode == VEHICLE_LIST_MODE_HALF_LIST, false);
     }
 
-    private View createBikeRow(Bike bike, Dialog dialog) {
+    private void renderVehicleList() {
+        vehicleCardsRow.removeAllViews();
+        vehicleListRows.removeAllViews();
+        vehicleListCardScroll.scrollTo(0, 0);
+        for (Bike bike : bikes) {
+            vehicleCardsRow.addView(createBikeCard(bike));
+            vehicleListRows.addView(createBikeListRow(bike));
+        }
+        updateVehicleListHeader();
+    }
+
+    private void refreshVehicleListIfVisible() {
+        if (vehicleListPanel.getVisibility() != View.VISIBLE) {
+            return;
+        }
+        if (bikes.isEmpty()) {
+            hideVehicleList();
+            return;
+        }
+        renderVehicleList();
+    }
+
+    private View createBikeCard(Bike bike) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(12), dp(10), dp(12), dp(10));
+        card.setBackgroundResource(
+                selectedBike != null && selectedBike.number.equals(bike.number)
+                        ? R.drawable.bg_vehicle_list_card_selected
+                        : R.drawable.bg_vehicle_list_card
+        );
+
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        TextView number = textView("#" + bike.number, 16, R.color.text_primary, true);
+        number.setSingleLine(true);
+        number.setEllipsize(TextUtils.TruncateAt.END);
+        titleRow.addView(
+                number,
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1)
+        );
+        TextView action = textView(
+                getString(R.string.action_locate),
+                12,
+                R.color.control_accent_text,
+                true
+        );
+        action.setGravity(Gravity.CENTER);
+        action.setClickable(true);
+        action.setFocusable(true);
+        action.setContentDescription(getString(R.string.action_locate) + " " + bike.number);
+        TypedValue actionBackground = new TypedValue();
+        if (getTheme().resolveAttribute(
+                android.R.attr.selectableItemBackgroundBorderless,
+                actionBackground,
+                true
+        )) {
+            action.setBackground(getDrawable(actionBackground.resourceId));
+        }
+        action.setOnClickListener(view -> locateBikeOnMapFromCard(bike));
+        titleRow.addView(action, new LinearLayout.LayoutParams(
+                dp(48),
+                dp(48)
+        ));
+        card.addView(titleRow);
+
+        String site = siteDisplayName(bike);
+        if (!site.isEmpty()) {
+            TextView siteView = textView(site, 12, R.color.text_secondary, false);
+            siteView.setSingleLine(true);
+            siteView.setEllipsize(TextUtils.TruncateAt.END);
+            card.addView(siteView);
+        }
+
+        TextView meta = textView(
+                formatDistance(bike.distanceMeters)
+                        + " · " + formatBatteryLabel(bike)
+                        + " · " + getString(bike.statusRes),
+                11,
+                R.color.text_tertiary,
+                false
+        );
+        meta.setSingleLine(true);
+        meta.setEllipsize(TextUtils.TruncateAt.END);
+        card.addView(meta);
+
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                vehicleListCardWidth(),
+                ViewGroup.LayoutParams.MATCH_PARENT
+        );
+        card.setLayoutParams(params);
+        card.setOnClickListener(view -> selectBikeFromVehicleList(bike));
+        return card;
+    }
+
+    private int vehicleListCardWidth() {
+        int viewportWidth = vehicleListCardScroll.getWidth();
+        if (viewportWidth <= 0) {
+            viewportWidth = getResources().getDisplayMetrics().widthPixels - dp(56);
+        }
+        return Math.max(1, viewportWidth);
+    }
+
+    private void snapVehicleCardsToNearest() {
+        int viewportWidth = vehicleListCardScroll.getWidth();
+        if (viewportWidth <= 0 || vehicleCardsRow.getChildCount() == 0) {
+            return;
+        }
+        int page = Math.round(vehicleListCardScroll.getScrollX() / (float) viewportWidth);
+        page = Math.max(0, Math.min(vehicleCardsRow.getChildCount() - 1, page));
+        vehicleListCardScroll.smoothScrollTo(page * viewportWidth, 0);
+    }
+
+    private View createBikeListRow(Bike bike) {
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -3185,15 +3379,104 @@ public final class MainActivity extends BaseActivity implements LocationListener
         ));
         row.addView(labels, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
-        TextView action = textView(getString(R.string.action_view), 13, R.color.control_accent_text, true);
+        TextView action = textView(
+                getString(R.string.action_locate),
+                13,
+                R.color.control_accent_text,
+                true
+        );
         action.setGravity(Gravity.CENTER);
         row.addView(action, new LinearLayout.LayoutParams(dp(48), ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        row.setOnClickListener(view -> {
-            dialog.dismiss();
-            showBikeDetail(bike, true);
-        });
+        row.setOnClickListener(view -> selectBikeFromVehicleList(bike));
         return row;
+    }
+
+    private void selectBikeFromVehicleList(Bike bike) {
+        hideVehicleList();
+        showBikeDetail(bike, true);
+    }
+
+    private void locateBikeOnMapFromCard(Bike bike) {
+        focusBikeOnMap(bike, null);
+    }
+
+    private void setVehicleListExpanded(boolean expanded, boolean animate) {
+        if (vehicleListPanel == null
+                || vehicleListPanel.getVisibility() != View.VISIBLE) {
+            vehicleListExpanded = expanded;
+            return;
+        }
+        vehicleListExpanded = expanded;
+        vehicleListCardScroll.setVisibility(expanded ? View.GONE : View.VISIBLE);
+        vehicleListScroll.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        updateVehicleListHeader();
+        animateVehicleListHeight(
+                expanded ? vehicleListExpandedHeight() : vehicleListCollapsedHeight(),
+                animate
+        );
+    }
+
+    private void updateVehicleListHeader() {
+        if (tvVehicleListSubtitle == null || btnVehicleListExpand == null) {
+            return;
+        }
+        tvVehicleListSubtitle.setText(getString(
+                vehicleListExpanded
+                        ? R.string.list_subtitle
+                        : R.string.vehicle_list_subtitle_cards,
+                bikes.size()
+        ));
+        btnVehicleListExpand.setText(
+                vehicleListExpanded
+                        ? R.string.vehicle_list_collapse
+                        : R.string.vehicle_list_show_all
+        );
+    }
+
+    private void animateVehicleListHeight(int targetHeight, boolean animate) {
+        if (vehicleListAnimator != null) {
+            vehicleListAnimator.cancel();
+            vehicleListAnimator = null;
+        }
+        ViewGroup.LayoutParams params = vehicleListPanel.getLayoutParams();
+        int startHeight = vehicleListPanel.getHeight();
+        if (!animate || startHeight <= 0) {
+            params.height = targetHeight;
+            vehicleListPanel.setLayoutParams(params);
+            return;
+        }
+        ValueAnimator animator = ValueAnimator.ofInt(startHeight, targetHeight);
+        animator.setDuration(VEHICLE_LIST_ANIMATION_MS);
+        animator.addUpdateListener(animation -> {
+            params.height = (int) animation.getAnimatedValue();
+            vehicleListPanel.setLayoutParams(params);
+        });
+        vehicleListAnimator = animator;
+        animator.start();
+    }
+
+    private int vehicleListCollapsedHeight() {
+        return dp(220);
+    }
+
+    private int vehicleListExpandedHeight() {
+        int screenHeight = getResources().getDisplayMetrics().heightPixels;
+        return Math.max(
+                dp(280),
+                Math.min(dp(520), Math.round(screenHeight * 0.58f))
+        );
+    }
+
+    private void hideVehicleList() {
+        if (vehicleListAnimator != null) {
+            vehicleListAnimator.cancel();
+            vehicleListAnimator = null;
+        }
+        vehicleListExpanded = false;
+        if (vehicleListPanel != null) {
+            vehicleListPanel.setVisibility(View.GONE);
+        }
     }
 
     /**
@@ -4305,33 +4588,32 @@ public final class MainActivity extends BaseActivity implements LocationListener
             return;
         }
 
-        Location bestLastKnown = null;
-        String[] providers = hasFineLocation
-                ? new String[]{
-                LocationManager.GPS_PROVIDER,
-                LocationManager.NETWORK_PROVIDER
-        }
-                : new String[]{LocationManager.NETWORK_PROVIDER};
-        for (String provider : providers) {
-            try {
-                Location candidate = locationManager.getLastKnownLocation(provider);
-                if (candidate != null
-                        && (bestLastKnown == null
-                        || candidate.getAccuracy() < bestLastKnown.getAccuracy())) {
-                    bestLastKnown = candidate;
-                }
-            } catch (IllegalArgumentException | SecurityException exception) {
-                DiagnosticLog.detail("Loc", "provider unavailable " + provider);
+        // 只在首次没有定位时回放缓存点。已有蓝点时再次读取
+        // getLastKnownLocation() 会把切后台前的旧 network 点重新喂给界面，
+        // 用户点定位后就会先跳回旧位置。
+        if (currentLocation == null) {
+            Location bestLastKnown = null;
+            String[] providers = hasFineLocation
+                    ? new String[]{
+                    LocationManager.GPS_PROVIDER,
+                    LocationManager.NETWORK_PROVIDER
             }
-        }
-
-        // Falling back to the fix already on screen keeps the marker attached
-        // even when the providers have no cached location to hand back yet.
-        if (bestLastKnown == null) {
-            bestLastKnown = currentLocation;
-        }
-        if (bestLastKnown != null) {
-            onLocationChanged(bestLastKnown);
+                    : new String[]{LocationManager.NETWORK_PROVIDER};
+            for (String provider : providers) {
+                try {
+                    Location candidate = locationManager.getLastKnownLocation(provider);
+                    if (candidate != null
+                            && (bestLastKnown == null
+                            || candidate.getAccuracy() < bestLastKnown.getAccuracy())) {
+                        bestLastKnown = candidate;
+                    }
+                } catch (IllegalArgumentException | SecurityException exception) {
+                    DiagnosticLog.detail("Loc", "provider unavailable " + provider);
+                }
+            }
+            if (bestLastKnown != null) {
+                onLocationChanged(bestLastKnown);
+            }
         }
 
         boolean registered = false;
@@ -4423,15 +4705,84 @@ public final class MainActivity extends BaseActivity implements LocationListener
         return false;
     }
 
+    /**
+     * 保留更好的实时定位，避免 network 的旧缓存点覆盖刚到达的 GPS 点。
+     */
+    private boolean shouldAcceptLocation(Location candidate) {
+        if (currentLocation == null) {
+            return true;
+        }
+
+        long candidateElapsed = candidate.getElapsedRealtimeNanos();
+        long currentElapsed = currentLocation.getElapsedRealtimeNanos();
+        long toleranceNanos = LOCATION_TIMESTAMP_TOLERANCE_MS * 1_000_000L;
+        if (candidateElapsed > 0L
+                && currentElapsed > 0L
+                && candidateElapsed + toleranceNanos < currentElapsed) {
+            return false;
+        }
+
+        // 个别提供者不填 elapsedRealtimeNanos，退回使用定位自身的时间戳。
+        if ((candidateElapsed <= 0L || currentElapsed <= 0L)
+                && candidate.getTime() > 0L
+                && currentLocation.getTime() > 0L
+                && candidate.getTime() + LOCATION_TIMESTAMP_TOLERANCE_MS
+                        < currentLocation.getTime()) {
+            return false;
+        }
+
+        boolean significantlyNewer = isSignificantlyNewer(candidate);
+        if (LocationManager.NETWORK_PROVIDER.equals(candidate.getProvider())
+                && LocationManager.GPS_PROVIDER.equals(currentLocation.getProvider())) {
+            if (isFresh(currentLocation, LOCATION_GPS_FRESH_WINDOW_MS)
+                    || !significantlyNewer) {
+                return false;
+            }
+        }
+
+        if (candidate.hasAccuracy()
+                && currentLocation.hasAccuracy()
+                && candidate.getAccuracy()
+                        > currentLocation.getAccuracy() + LOCATION_ACCURACY_MARGIN_METERS
+                && !significantlyNewer) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private boolean isFresh(Location location, long windowMs) {
+        long elapsedMs = location.getElapsedRealtimeNanos() / 1_000_000L;
+        if (elapsedMs > 0L) {
+            long ageMs = SystemClock.elapsedRealtime() - elapsedMs;
+            return ageMs >= 0L && ageMs <= windowMs;
+        }
+        long timeMs = location.getTime();
+        if (timeMs > 0L) {
+            long ageMs = System.currentTimeMillis() - timeMs;
+            return ageMs >= 0L && ageMs <= windowMs;
+        }
+        return false;
+    }
+
+    private boolean isSignificantlyNewer(Location candidate) {
+        long candidateElapsed = candidate.getElapsedRealtimeNanos();
+        long currentElapsed = currentLocation.getElapsedRealtimeNanos();
+        if (candidateElapsed > 0L && currentElapsed > 0L) {
+            return candidateElapsed > currentElapsed
+                    && candidateElapsed - currentElapsed
+                            > LOCATION_SIGNIFICANTLY_NEWER_MS * 1_000_000L;
+        }
+        return candidate.getTime() > 0L
+                && currentLocation.getTime() > 0L
+                && candidate.getTime() > currentLocation.getTime()
+                && candidate.getTime() - currentLocation.getTime()
+                        > LOCATION_SIGNIFICANTLY_NEWER_MS;
+    }
+
     @Override
     public void onLocationChanged(Location location) {
-        // 每次回前台 startLocationUpdates() 都会先把系统缓存的旧定位喂进来。
-        // 若它比已经显示的点还旧，直接忽略，避免蓝点往回跳。
-        if (currentLocation != null
-                && location.getElapsedRealtimeNanos() > 0L
-                && currentLocation.getElapsedRealtimeNanos() > 0L
-                && location.getElapsedRealtimeNanos()
-                        < currentLocation.getElapsedRealtimeNanos()) {
+        if (!shouldAcceptLocation(location)) {
             DiagnosticLog.event("Loc", "stale fix ignored");
             return;
         }
@@ -4766,6 +5117,10 @@ public final class MainActivity extends BaseActivity implements LocationListener
     @Override
     protected void onDestroy() {
         uiHandler.removeCallbacks(refreshFromMapCenterRunnable);
+        if (vehicleListAnimator != null) {
+            vehicleListAnimator.cancel();
+            vehicleListAnimator = null;
+        }
         cancelReminderDialogTimer();
         stopLocationUpdates();
         if (repository != null) {
