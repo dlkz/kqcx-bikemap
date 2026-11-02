@@ -82,6 +82,20 @@
             android:src="@drawable/ic_settings" />
     </LinearLayout>
 
+    <ImageButton
+        android:id="@+id/btnRefresh"
+        android:layout_width="54dp"
+        android:layout_height="54dp"
+        android:layout_gravity="bottom|end"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="276dp"
+        android:background="@drawable/bg_circle_white"
+        android:contentDescription="@string/refresh"
+        android:elevation="8dp"
+        android:padding="14dp"
+        android:src="@drawable/ic_refresh"
+        android:tint="@color/map_control_icon" />
+
     <LinearLayout
         android:id="@+id/leftControls"
         android:layout_width="54dp"
@@ -132,20 +146,6 @@
             android:src="@drawable/ic_list"
             android:tint="@color/map_control_icon" />
     </LinearLayout>
-
-    <ImageButton
-        android:id="@+id/btnRefresh"
-        android:layout_width="54dp"
-        android:layout_height="54dp"
-        android:layout_gravity="bottom|end"
-        android:layout_marginEnd="16dp"
-        android:layout_marginBottom="276dp"
-        android:background="@drawable/bg_circle_white"
-        android:contentDescription="@string/refresh"
-        android:elevation="8dp"
-        android:padding="14dp"
-        android:src="@drawable/ic_refresh"
-        android:tint="@color/map_control_icon" />
 
     <LinearLayout
         android:id="@+id/bottomArea"
@@ -220,9 +220,21 @@
                 android:orientation="horizontal">
 
                 <Button
-                    android:id="@+id/btnShowQr"
-                    android:layout_width="match_parent"
+                    android:id="@+id/btnFindVehicle"
+                    android:layout_width="0dp"
                     android:layout_height="48dp"
+                    android:layout_marginEnd="8dp"
+                    android:layout_weight="1"
+                    android:backgroundTint="@color/surface_group"
+                    android:text="@string/find_vehicle"
+                    android:textAllCaps="false"
+                    android:textColor="@color/text_primary" />
+
+                <Button
+                    android:id="@+id/btnShowQr"
+                    android:layout_width="0dp"
+                    android:layout_height="48dp"
+                    android:layout_weight="1"
                     android:backgroundTint="@color/button_primary"
                     android:text="@string/show_qr"
                     android:textAllCaps="false"

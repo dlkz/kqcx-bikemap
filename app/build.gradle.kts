@@ -173,6 +173,7 @@ dependencies {
     implementation("androidx.activity:activity:1.10.1")
     implementation("androidx.core:core:1.13.1")
     implementation("com.google.zxing:core:3.4.1")
+    testImplementation("junit:junit:4.13.2")
 }
 
 tasks.named("preBuild").configure {

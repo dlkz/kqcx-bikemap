@@ -258,6 +258,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private HorizontalScrollView vehicleListCardScroll;
     private ScrollView vehicleListScroll;
     private View settingsPanel;
+    private Button btnFindVehicle;
     private Button btnShowQr;
     private ImageButton btnRefresh;
     private ImageButton btnReminder;
@@ -500,6 +501,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
         switchFilterUnavailable = findViewById(R.id.switchFilterUnavailable);
         applyCatalogUpdatedAt(findViewById(R.id.tvNumberDataUpdated));
         mapCenterIndicator = findViewById(R.id.mapCenterIndicator);
+        btnFindVehicle = findViewById(R.id.btnFindVehicle);
         btnShowQr = findViewById(R.id.btnShowQr);
         btnRefresh = findViewById(R.id.btnRefresh);
         btnReminder = findViewById(R.id.btnReminder);
@@ -693,6 +695,15 @@ public final class MainActivity extends BaseActivity implements LocationListener
         btnShowQr.setOnClickListener(view -> {
             if (selectedBike != null) {
                 showQrDialog(selectedBike);
+            }
+        });
+        btnFindVehicle.setOnClickListener(view -> {
+            if (selectedBike != null && selectedBike.locationKnown) {
+                startActivity(VehicleFinderActivity.createIntent(
+                        this,
+                        selectedBike,
+                        currentLocation
+                ));
             }
         });
     }
@@ -3127,6 +3138,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
         selectedBike = bike;
         updateMarkerSelection();
         bikePanel.setVisibility(View.VISIBLE);
+        updateFindVehicleButton();
         tvBikeNumber.setText(getString(R.string.number_format, bike.number));
         tvManualNotice.setVisibility(bike.locationKnown ? View.GONE : View.VISIBLE);
 
@@ -3208,6 +3220,17 @@ public final class MainActivity extends BaseActivity implements LocationListener
         mapView.invalidate();
     }
 
+    private void updateFindVehicleButton() {
+        if (btnFindVehicle == null) {
+            return;
+        }
+        btnFindVehicle.setVisibility(
+                selectedBike != null && selectedBike.locationKnown
+                        ? View.VISIBLE
+                        : View.GONE
+        );
+    }
+
     private void showBikeList() {
         if (bikes.isEmpty()) {
             Toast.makeText(
@@ -3255,7 +3278,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private View createBikeCard(Bike bike) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(12), dp(10), dp(12), dp(10));
+        card.setPadding(dp(12), dp(6), dp(12), dp(6));
         card.setBackgroundResource(
                 selectedBike != null && selectedBike.number.equals(bike.number)
                         ? R.drawable.bg_vehicle_list_card_selected
@@ -3265,7 +3288,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
         LinearLayout titleRow = new LinearLayout(this);
         titleRow.setGravity(Gravity.CENTER_VERTICAL);
         titleRow.setOrientation(LinearLayout.HORIZONTAL);
-        TextView number = textView("#" + bike.number, 16, R.color.text_primary, true);
+        TextView number = textView("#" + bike.number, 18, R.color.text_primary, true);
         number.setSingleLine(true);
         number.setEllipsize(TextUtils.TruncateAt.END);
         titleRow.addView(
@@ -3274,7 +3297,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
         );
         TextView action = textView(
                 getString(R.string.action_locate),
-                12,
+                13,
                 R.color.control_accent_text,
                 true
         );
@@ -3299,7 +3322,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
 
         String site = siteDisplayName(bike);
         if (!site.isEmpty()) {
-            TextView siteView = textView(site, 12, R.color.text_secondary, false);
+            TextView siteView = textView(site, 14, R.color.text_secondary, false);
             siteView.setSingleLine(true);
             siteView.setEllipsize(TextUtils.TruncateAt.END);
             card.addView(siteView);
@@ -3309,7 +3332,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
                 formatDistance(bike.distanceMeters)
                         + " · " + formatBatteryLabel(bike)
                         + " · " + getString(bike.statusRes),
-                11,
+                12,
                 R.color.text_tertiary,
                 false
         );
@@ -3415,6 +3438,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
                 expanded ? vehicleListExpandedHeight() : vehicleListCollapsedHeight(),
                 animate
         );
+        updateMapControlsForVehicleList();
     }
 
     private void updateVehicleListHeader() {
@@ -3457,7 +3481,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     private int vehicleListCollapsedHeight() {
-        return dp(220);
+        return dp(200);
     }
 
     private int vehicleListExpandedHeight() {
@@ -3476,6 +3500,41 @@ public final class MainActivity extends BaseActivity implements LocationListener
         vehicleListExpanded = false;
         if (vehicleListPanel != null) {
             vehicleListPanel.setVisibility(View.GONE);
+        }
+        updateMapControlsForVehicleList();
+    }
+
+    private void updateMapControlsForVehicleList() {
+        View leftControls = findViewById(R.id.leftControls);
+        View listButton = findViewById(R.id.btnList);
+        View refreshButton = findViewById(R.id.btnRefresh);
+        if (leftControls == null || listButton == null || refreshButton == null) {
+            return;
+        }
+        boolean listVisible = vehicleListPanel != null
+                && vehicleListPanel.getVisibility() == View.VISIBLE;
+        if (!listVisible) {
+            leftControls.setVisibility(View.VISIBLE);
+            listButton.setVisibility(View.VISIBLE);
+            leftControls.setTranslationY(0f);
+            refreshButton.setVisibility(View.VISIBLE);
+            refreshButton.setTranslationY(0f);
+        } else if (vehicleListExpanded) {
+            leftControls.setVisibility(View.GONE);
+            leftControls.setTranslationY(0f);
+            refreshButton.setVisibility(View.GONE);
+            refreshButton.setTranslationY(0f);
+        } else {
+            leftControls.setVisibility(View.VISIBLE);
+            listButton.setVisibility(View.GONE);
+            int overlap = vehicleListCollapsedHeight()
+                    + dp(88)
+                    + systemBarsBottom
+                    - dp(276);
+            float shift = -Math.max(0, overlap + dp(12));
+            leftControls.setTranslationY(shift);
+            refreshButton.setVisibility(View.VISIBLE);
+            refreshButton.setTranslationY(shift - dp(10));
         }
     }
 

@@ -17,6 +17,8 @@
     <color name="surface_soft">#141618</color>
     <color name="surface">#1F2126</color>
     <color name="surface_group">#2A2D33</color>
+    <color name="vehicle_card_surface">#2A2D33</color>
+    <color name="vehicle_card_surface_selected">#30353C</color>
     <color name="map_control_surface">#1F2126</color>
     <color name="map_control_icon">@color/control_accent</color>
     <!-- 87% white for primary text, with softer levels for secondary copy. -->
@@ -27,7 +29,7 @@
     <!-- Dark mode uses a lifted hairline so cards read as separate layers. -->
     <color name="card_hairline">#1FFFFFFF</color>
     <color name="marker_outline">@color/option_switch</color>
-    <color name="center_marker">#E4E8EA</color>
+    <color name="center_marker">#6FA8B5</color>
     <color name="center_marker_inner">#1F2126</color>
     <color name="location_marker">@color/control_accent</color>
     <!-- Elevation and spacing carry hierarchy; outlines stay visually silent. -->
