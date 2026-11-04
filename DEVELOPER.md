@@ -165,6 +165,7 @@ $env:ANDROID_HOME = "<Android SDK 路径>"
 ### 5.6 地图估算寻车
 
 - `VehicleFinderActivity` 接收车辆 GCJ-02 坐标、最后上报时间和地图页已有的当前位置。
+- `VehicleFinderTargetState` 单独维护车辆位置及 `ESTIMATED` / `REFRESHED` 来源；刷新失败时 source 和坐标都保持不变。
 - 页面自行监听定位与方向传感器，使用 `Location.distanceBetween` 在设备本地计算距离和绝对方位。
 - 方向箭头仅在手机定位 5 秒内、精度不超过 25 米、provider 可用且方向传感器可靠时显示；否则隐藏箭头，按原因显示地图绝对方位或重新定位提示。
 - 刷新按钮同时查询车辆最新上报位置并重新获取手机位置；刷新开始前的缓存点会被忽略，较差的网络定位最多等待 5 秒良好 GPS，超时后才作为实际质量状态提交。

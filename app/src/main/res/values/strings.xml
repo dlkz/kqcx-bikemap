@@ -25,7 +25,8 @@
     <string name="find_vehicle">寻找车辆</string>
     <string name="finder_title">寻找车辆</string>
     <string name="finder_vehicle_title">寻找 %1$s</string>
-    <string name="finder_map_estimate">地图估算</string>
+    <string name="finder_source_estimated">最后上报位置</string>
+    <string name="finder_source_refreshed">已刷新位置</string>
     <string name="finder_waiting_location">正在获取当前位置…</string>
     <string name="finder_distance_placeholder">等待定位</string>
     <string name="finder_distance_approximate_format">约 %1$s</string>

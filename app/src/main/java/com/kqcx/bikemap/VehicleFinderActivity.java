@@ -95,15 +95,13 @@ public final class VehicleFinderActivity extends BaseActivity
     private TextView tvDistance;
     private TextView tvDirection;
     private TextView tvFreshness;
+    private TextView tvSource;
     private TextView tvHint;
     private ImageView imgArrow;
     private Button btnAction;
     private ImageButton btnFinderRefresh;
     private VehicleFinderRadarView radarView;
-    private String vehicleNumber;
-    private double targetLatitude;
-    private double targetLongitude;
-    private long targetLastUploadAtMs;
+    private VehicleFinderTargetState target;
     private float headingDegrees;
     private boolean hasHeading;
     private boolean trackingLocation;
@@ -165,12 +163,13 @@ public final class VehicleFinderActivity extends BaseActivity
         applyInitialLocation();
         ((TextView) findViewById(R.id.tvFinderVehicleNumber)).setText(getString(
                 R.string.finder_vehicle_title,
-                vehicleNumber
+                target.number()
         ));
         findViewById(R.id.btnFinderBack).setOnClickListener(view -> finish());
         btnFinderRefresh.setOnClickListener(view -> refreshPositions());
         btnAction.setOnClickListener(view -> handleAction());
         applySystemBarInsets();
+        updateTargetSource();
         updateRefreshButtonState();
         updateFreshness();
         updateVisualsNow();
@@ -178,25 +177,20 @@ public final class VehicleFinderActivity extends BaseActivity
 
     private boolean readTarget() {
         Intent intent = getIntent();
-        vehicleNumber = intent.getStringExtra(EXTRA_NUMBER);
-        targetLatitude = intent.getDoubleExtra(EXTRA_LATITUDE, Double.NaN);
-        targetLongitude = intent.getDoubleExtra(EXTRA_LONGITUDE, Double.NaN);
-        targetLastUploadAtMs = intent.getLongExtra(EXTRA_LAST_UPLOAD, 0L);
-        return vehicleNumber != null
-                && !vehicleNumber.trim().isEmpty()
-                && !Double.isNaN(targetLatitude)
-                && !Double.isNaN(targetLongitude)
-                && targetLatitude >= -90
-                && targetLatitude <= 90
-                && targetLongitude >= -180
-                && targetLongitude <= 180
-                && (targetLatitude != 0d || targetLongitude != 0d);
+        target = VehicleFinderTargetState.createEstimated(
+                intent.getStringExtra(EXTRA_NUMBER),
+                intent.getDoubleExtra(EXTRA_LATITUDE, Double.NaN),
+                intent.getDoubleExtra(EXTRA_LONGITUDE, Double.NaN),
+                intent.getLongExtra(EXTRA_LAST_UPLOAD, 0L)
+        );
+        return target != null;
     }
 
     private void bindViews() {
         tvDistance = findViewById(R.id.tvFinderDistance);
         tvDirection = findViewById(R.id.tvFinderDirection);
         tvFreshness = findViewById(R.id.tvFinderFreshness);
+        tvSource = findViewById(R.id.tvFinderSource);
         tvHint = findViewById(R.id.tvFinderHint);
         imgArrow = findViewById(R.id.imgFinderArrow);
         btnAction = findViewById(R.id.btnFinderAction);
@@ -262,12 +256,11 @@ public final class VehicleFinderActivity extends BaseActivity
         if (refreshingTarget
                 || reacquiringLocation
                 || repository == null
-                || vehicleNumber == null
-                || !vehicleNumber.matches("\\d{9}")) {
+                || !target.number().matches("\\d{9}")) {
             return;
         }
         GeoPoint queryPoint = currentLocation == null
-                ? new GeoPoint(targetLatitude, targetLongitude)
+                ? new GeoPoint(target.latitude(), target.longitude())
                 : CoordinateUtils.wgs84ToGcj02(
                         currentLocation.getLatitude(),
                         currentLocation.getLongitude()
@@ -277,7 +270,7 @@ public final class VehicleFinderActivity extends BaseActivity
         updateRefreshButtonState();
         tvFreshness.setText(R.string.finder_refreshing_vehicle);
         repository.queryOneCar(
-                vehicleNumber,
+                target.number(),
                 queryPoint.getLatitude(),
                 queryPoint.getLongitude(),
                 new BikeRepository.BikeCallback() {
@@ -289,7 +282,7 @@ public final class VehicleFinderActivity extends BaseActivity
                         finishTargetRefresh();
                         if (bike == null
                                 || !bike.locationKnown
-                                || !vehicleNumber.equals(bike.number)) {
+                                || !target.applyRefresh(bike)) {
                             Toast.makeText(
                                     VehicleFinderActivity.this,
                                     R.string.finder_refresh_miss,
@@ -297,9 +290,7 @@ public final class VehicleFinderActivity extends BaseActivity
                             ).show();
                             return;
                         }
-                        targetLatitude = bike.latitude;
-                        targetLongitude = bike.longitude;
-                        targetLastUploadAtMs = bike.lastUploadAtMs;
+                        updateTargetSource();
                         updateFreshness();
                         updateVisualsNow();
                     }
@@ -382,6 +373,17 @@ public final class VehicleFinderActivity extends BaseActivity
         refreshingTarget = false;
         updateRefreshButtonState();
         updateFreshness();
+    }
+
+    private void updateTargetSource() {
+        if (tvSource == null || target == null) {
+            return;
+        }
+        tvSource.setText(
+                target.source() == VehicleFinderTargetState.Source.REFRESHED
+                        ? R.string.finder_source_refreshed
+                        : R.string.finder_source_estimated
+        );
     }
 
     private void startLocationTracking() {
@@ -768,8 +770,8 @@ public final class VehicleFinderActivity extends BaseActivity
         Location.distanceBetween(
                 currentGcj.getLatitude(),
                 currentGcj.getLongitude(),
-                targetLatitude,
-                targetLongitude,
+                target.latitude(),
+                target.longitude(),
                 results
         );
         float distanceMeters = results[0];
@@ -911,6 +913,7 @@ public final class VehicleFinderActivity extends BaseActivity
                     getString(R.string.finder_hint_compass_unreliable)
             );
         }
+        long targetLastUploadAtMs = target.lastUploadAtMs();
         boolean uploadTimeKnown = targetLastUploadAtMs > 0L;
         long uploadAge = uploadTimeKnown
                 ? Math.max(0L, System.currentTimeMillis() - targetLastUploadAtMs)
@@ -992,6 +995,7 @@ public final class VehicleFinderActivity extends BaseActivity
             tvFreshness.setText(R.string.finder_refreshing_vehicle);
             return;
         }
+        long targetLastUploadAtMs = target.lastUploadAtMs();
         if (targetLastUploadAtMs <= 0L) {
             tvFreshness.setText(R.string.finder_last_upload_unknown);
             return;
