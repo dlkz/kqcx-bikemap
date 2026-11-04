@@ -105,11 +105,16 @@ public final class BikeRepository {
             try {
                 String response = executePost(
                         ONE_CAR_URL,
-                        "carNum=" + carNum
+                        "carNum=" + VehicleNumberCatalog.normalize(carNum)
                                 + "&lat=" + centerLatitude
                                 + "&lng=" + centerLongitude
                 );
-                Bike bike = parseOneCar(response, centerLatitude, centerLongitude);
+                Bike bike = parseOneCar(
+                        response,
+                        carNum,
+                        centerLatitude,
+                        centerLongitude
+                );
                 mainHandler.post(() -> callback.onSuccess(bike));
             } catch (Exception exception) {
                 String finalMessage = toUserMessage(exception);
@@ -210,21 +215,36 @@ public final class BikeRepository {
      */
     private Bike parseOneCar(
             String response,
+            String requestedNumber,
             double centerLatitude,
             double centerLongitude
     ) throws Exception {
         JSONObject root = new JSONObject(response);
         throwIfEnvelopeError(root);
         JSONObject car = root.optJSONObject("result");
-        if (car == null) {
-            JSONArray list = root.optJSONArray("result");
-            if (list != null && list.length() > 0) {
-                car = list.optJSONObject(0);
+        if (car != null) {
+            Bike parsed = parseBike(car, centerLatitude, centerLongitude, true);
+            return matchesRequestedNumber(requestedNumber, parsed) ? parsed : null;
+        }
+        JSONArray list = root.optJSONArray("result");
+        if (list != null) {
+            for (int index = 0; index < list.length(); index++) {
+                JSONObject item = list.optJSONObject(index);
+                if (item == null) {
+                    continue;
+                }
+                Bike parsed = parseBike(item, centerLatitude, centerLongitude, true);
+                if (matchesRequestedNumber(requestedNumber, parsed)) {
+                    return parsed;
+                }
             }
         }
-        return car == null
-                ? null
-                : parseBike(car, centerLatitude, centerLongitude, true);
+        return null;
+    }
+
+    static boolean matchesRequestedNumber(String requestedNumber, Bike bike) {
+        return bike != null
+                && VehicleNumberCatalog.normalize(requestedNumber).equals(bike.number);
     }
 
     private List<Bike> parseBikes(

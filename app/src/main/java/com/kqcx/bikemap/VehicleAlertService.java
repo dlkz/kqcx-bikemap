@@ -930,14 +930,29 @@ public final class VehicleAlertService extends Service {
 
     /** 只接受新鲜且精度足够的位置，避免用陈旧或粗糙定位做距离判定。 */
     private static boolean isUsableLocation(Location location) {
+        return isUsableLocation(
+                location,
+                SystemClock.elapsedRealtimeNanos(),
+                System.currentTimeMillis()
+        );
+    }
+
+    private static boolean isUsableLocation(
+            Location location,
+            long nowElapsedNanos,
+            long nowWallTimeMs
+    ) {
         if (location == null) {
             return false;
         }
-        long ageMs = System.currentTimeMillis() - location.getTime();
-        if (ageMs > MAX_FIX_AGE_MS) {
-            return false;
-        }
-        return location.hasAccuracy() && location.getAccuracy() <= MAX_FIX_ACCURACY_METERS;
+        return VehicleFinderMath.isFresh(
+                location.getElapsedRealtimeNanos(),
+                nowElapsedNanos,
+                location.getTime(),
+                nowWallTimeMs,
+                MAX_FIX_AGE_MS
+        ) && location.hasAccuracy()
+                && location.getAccuracy() <= MAX_FIX_ACCURACY_METERS;
     }
 
     /** 系统中最近一次可用（新鲜、精度足够）的已知位置。 */
@@ -948,16 +963,28 @@ public final class VehicleAlertService extends Service {
                 != PackageManager.PERMISSION_GRANTED) {
             return null;
         }
+        long nowElapsedNanos = SystemClock.elapsedRealtimeNanos();
+        long nowWallTimeMs = System.currentTimeMillis();
         Location best = null;
+        long bestAgeMs = Long.MAX_VALUE;
         for (String provider : new String[]{
                 LocationManager.GPS_PROVIDER,
                 LocationManager.NETWORK_PROVIDER
         }) {
             try {
                 Location candidate = locationManager.getLastKnownLocation(provider);
-                if (isUsableLocation(candidate)
-                        && (best == null || candidate.getTime() > best.getTime())) {
+                if (!isUsableLocation(candidate, nowElapsedNanos, nowWallTimeMs)) {
+                    continue;
+                }
+                long candidateAgeMs = VehicleFinderMath.locationAgeMs(
+                        candidate.getElapsedRealtimeNanos(),
+                        nowElapsedNanos,
+                        candidate.getTime(),
+                        nowWallTimeMs
+                );
+                if (candidateAgeMs < bestAgeMs) {
                     best = candidate;
+                    bestAgeMs = candidateAgeMs;
                 }
             } catch (RuntimeException ignored) {
                 // Provider not present on this device.

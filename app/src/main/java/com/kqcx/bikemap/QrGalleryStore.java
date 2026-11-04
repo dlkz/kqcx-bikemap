@@ -265,8 +265,20 @@ final class QrGalleryStore {
         if (rowExists == null) {
             return null;
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && hasConflictingOwner(id)) {
-            return new QrVerification(false, false, null);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            Boolean ownedByApp = isOwnedByPackage(id);
+            if (ownedByApp == null) {
+                return null;
+            }
+            if (!ownedByApp) {
+                return new QrVerification(false, false, null);
+            }
+            if (pending.hasFingerprint()) {
+                Long currentSize = mediaSize(id);
+                if (!matchesExpectedSize(pending.size, currentSize)) {
+                    return new QrVerification(false, false, null);
+                }
+            }
         }
 
         if (pending.hasFingerprint()) {
@@ -279,6 +291,9 @@ final class QrGalleryStore {
                     dataPath = pending.dataPath;
                     if (!isExpectedLegacyPath(dataPath)
                             || !pending.fileName.equals(new File(dataPath).getName())) {
+                        return new QrVerification(false, false, null);
+                    }
+                    if (!matchesExpectedSize(pending.size, new File(dataPath).length())) {
                         return new QrVerification(false, false, null);
                     }
                     currentHash = sha256(null, dataPath);
@@ -372,9 +387,9 @@ final class QrGalleryStore {
         }
     }
 
-    private boolean hasConflictingOwner(String id) {
+    private Boolean isOwnedByPackage(String id) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            return false;
+            return null;
         }
         try (Cursor cursor = context.getContentResolver().query(
                 MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
@@ -384,13 +399,43 @@ final class QrGalleryStore {
                 null
         )) {
             if (cursor == null || !cursor.moveToFirst()) {
-                return false;
+                return null;
             }
-            String owner = cursor.getString(0);
-            return owner != null && !context.getPackageName().equals(owner);
+            return isOwnedByPackage(cursor.getString(0), context.getPackageName())
+                    ? Boolean.TRUE
+                    : cursor.isNull(0) ? null : Boolean.FALSE;
         } catch (Exception exception) {
-            return false;
+            return null;
         }
+    }
+
+    private Long mediaSize(String id) {
+        try (Cursor cursor = context.getContentResolver().query(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                new String[]{MediaStore.MediaColumns.SIZE},
+                MediaStore.MediaColumns._ID + "=?",
+                new String[]{id},
+                null
+        )) {
+            if (cursor == null || !cursor.moveToFirst() || cursor.isNull(0)) {
+                return null;
+            }
+            return cursor.getLong(0);
+        } catch (Exception exception) {
+            return null;
+        }
+    }
+
+    static boolean isOwnedByPackage(String ownerPackage, String currentPackage) {
+        return ownerPackage != null
+                && currentPackage != null
+                && currentPackage.equals(ownerPackage);
+    }
+
+    static boolean matchesExpectedSize(long expectedSize, Long actualSize) {
+        return expectedSize >= 0L
+                && actualSize != null
+                && expectedSize == actualSize;
     }
 
     private boolean deleteVerifiedFile(String dataPath, String expectedName) {

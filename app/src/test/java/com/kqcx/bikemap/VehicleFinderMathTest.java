@@ -140,6 +140,76 @@ public final class VehicleFinderMathTest {
     }
 
     @Test
+    public void directionRequiresFreshPreciseAvailableLocationAndHeading() {
+        assertTrue(VehicleFinderMath.canShowDirectionArrow(
+                VehicleFinderMath.DIRECTION_MAX_AGE_MS,
+                VehicleFinderMath.DIRECTION_MAX_ACCURACY_METERS,
+                true,
+                true
+        ));
+        assertFalse(VehicleFinderMath.canShowDirectionArrow(
+                VehicleFinderMath.DIRECTION_MAX_AGE_MS + 1L,
+                20f,
+                true,
+                true
+        ));
+        assertFalse(VehicleFinderMath.canShowDirectionArrow(
+                1_000L,
+                VehicleFinderMath.DIRECTION_MAX_ACCURACY_METERS + 0.1f,
+                true,
+                true
+        ));
+        assertFalse(VehicleFinderMath.canShowDirectionArrow(
+                1_000L,
+                20f,
+                false,
+                true
+        ));
+        assertFalse(VehicleFinderMath.canShowDirectionArrow(
+                1_000L,
+                20f,
+                true,
+                false
+        ));
+    }
+
+    @Test
+    public void reacquireOnlyCommitsGoodGpsImmediately() {
+        assertTrue(VehicleFinderMath.canCommitReacquiredLocation(true, 35f));
+        assertFalse(VehicleFinderMath.canCommitReacquiredLocation(true, 35.1f));
+        assertFalse(VehicleFinderMath.canCommitReacquiredLocation(false, 10f));
+        assertFalse(VehicleFinderMath.canCommitReacquiredLocation(true, 0f));
+    }
+
+    @Test
+    public void reacquireIgnoresCachedFixesFromBeforeRefresh() {
+        assertFalse(VehicleFinderMath.isAfterReacquireStart(
+                999_000_000L,
+                1_000_000_000L,
+                0L,
+                0L
+        ));
+        assertTrue(VehicleFinderMath.isAfterReacquireStart(
+                1_001_000_000L,
+                1_000_000_000L,
+                0L,
+                0L
+        ));
+        assertFalse(VehicleFinderMath.isAfterReacquireStart(
+                0L,
+                0L,
+                999L,
+                1_000L
+        ));
+        assertTrue(VehicleFinderMath.isAfterReacquireStart(
+                0L,
+                0L,
+                1_001L,
+                1_000L
+        ));
+    }
+
+    @Test
     public void classifiesVehicleUploadAge() {
         assertEquals(
                 VehicleFinderMath.TARGET_UNKNOWN,

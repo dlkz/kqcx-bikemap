@@ -93,9 +93,8 @@
 
                 <FrameLayout
                     android:layout_width="match_parent"
-                    android:layout_height="0dp"
-                    android:layout_weight="1"
-                    android:layout_marginTop="2dp">
+                    android:layout_height="@dimen/finder_radar_size"
+                    android:layout_marginTop="6dp">
 
                     <com.kqcx.bikemap.VehicleFinderRadarView
                         android:id="@+id/vehicleFinderRadar"
@@ -105,8 +104,8 @@
 
                     <ImageView
                         android:id="@+id/imgFinderArrow"
-                        android:layout_width="92dp"
-                        android:layout_height="92dp"
+                        android:layout_width="96dp"
+                        android:layout_height="96dp"
                         android:layout_gravity="center"
                         android:contentDescription="@string/finder_direction_placeholder"
                         android:padding="18dp"
@@ -144,47 +143,64 @@
                     android:textColor="@color/text_secondary"
                     android:textSize="13sp" />
 
-                <TextView
-                    android:id="@+id/tvFinderHint"
+                <Space
                     android:layout_width="match_parent"
-                    android:layout_height="112dp"
-                    android:layout_marginTop="20dp"
-                    android:autoSizeMaxTextSize="13sp"
-                    android:autoSizeMinTextSize="9sp"
-                    android:autoSizeStepGranularity="1sp"
-                    android:autoSizeTextType="uniform"
-                    android:background="@drawable/bg_input"
-                    android:gravity="center"
-                    android:includeFontPadding="false"
-                    android:lineSpacingExtra="2dp"
-                    android:maxLines="6"
-                    android:padding="14dp"
-                    android:text="@string/finder_hint_map_estimate"
-                    android:textAlignment="center"
-                    android:textColor="@color/text_secondary"
-                    android:textSize="13sp" />
+                    android:layout_height="0dp"
+                    android:layout_weight="1" />
 
-                <Button
-                    android:id="@+id/btnFinderAction"
+                <LinearLayout
+                    android:id="@+id/finderBottomDock"
                     android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginTop="14dp"
-                    android:backgroundTint="@color/button_primary"
-                    android:enabled="false"
-                    android:text="@string/finder_allow_location"
-                    android:textAllCaps="false"
-                    android:textColor="@color/button_primary_text"
-                    android:visibility="gone" />
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
 
-                <Button
-                    android:id="@+id/btnFinderBackToMap"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginTop="14dp"
-                    android:backgroundTint="@color/surface_group"
-                    android:text="@string/finder_back_to_map"
-                    android:textAllCaps="false"
-                    android:textColor="@color/text_primary" />
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:background="@color/divider" />
+
+                    <TextView
+                        android:id="@+id/tvFinderHint"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:autoSizeMaxTextSize="13sp"
+                        android:autoSizeMinTextSize="9sp"
+                        android:autoSizeStepGranularity="1sp"
+                        android:autoSizeTextType="uniform"
+                        android:gravity="center"
+                        android:includeFontPadding="false"
+                        android:lineSpacingExtra="2dp"
+                        android:maxLines="6"
+                        android:padding="14dp"
+                        android:textAlignment="center"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="13sp"
+                        android:visibility="gone" />
+
+                    <Button
+                        android:id="@+id/btnFinderAction"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="10dp"
+                        android:backgroundTint="@color/button_primary"
+                        android:enabled="false"
+                        android:text="@string/finder_allow_location"
+                        android:textAllCaps="false"
+                        android:textColor="@color/button_primary_text"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/tvFinderEstimateNote"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:gravity="center"
+                        android:maxLines="2"
+                        android:text="@string/finder_hint_map_estimate"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="11sp" />
+                </LinearLayout>
         </LinearLayout>
     </LinearLayout>
 </FrameLayout>

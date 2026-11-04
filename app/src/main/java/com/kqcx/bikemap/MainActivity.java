@@ -133,6 +133,8 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private static final long LOCATION_SIGNIFICANTLY_NEWER_MS = 10_000L;
     /** GPS 在该窗口内仍视为新鲜，network 定位不能覆盖它。 */
     private static final long LOCATION_GPS_FRESH_WINDOW_MS = 15_000L;
+    /** 首次启动时只接受这个时限内的缓存定位，避免把旧位置当作当前位置。 */
+    private static final long LAST_KNOWN_MAX_AGE_MS = 120_000L;
     /** 精度差超过该值时，旧定位不能覆盖当前定位。 */
     private static final float LOCATION_ACCURACY_MARGIN_METERS = 50.0f;
     /**
@@ -2744,6 +2746,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
                         lastNearbyRawCount = result.size();
                         filterUnavailableBikes();
                         mergeQueriedBike();
+                        syncSelectedBikeAfterRefresh();
                         renderMap();
                         refreshVehicleListIfVisible();
                         updateDataRefreshTime(fetchedAt);
@@ -2792,6 +2795,24 @@ public final class MainActivity extends BaseActivity implements LocationListener
             }
         }
         bikes.add(queriedBike);
+    }
+
+    private void syncSelectedBikeAfterRefresh() {
+        if (selectedBike == null) {
+            return;
+        }
+        String selectedNumber = selectedBike.number;
+        for (Bike bike : bikes) {
+            if (bike.number.equals(selectedNumber)) {
+                selectedBike = bike;
+                updateFindVehicleButton();
+                if (bikePanel.getVisibility() == View.VISIBLE) {
+                    bindBikeDetail(bike);
+                }
+                return;
+            }
+        }
+        hideBikePanel();
     }
 
     private void finishLoadRequest() {
@@ -3139,6 +3160,18 @@ public final class MainActivity extends BaseActivity implements LocationListener
         updateMarkerSelection();
         bikePanel.setVisibility(View.VISIBLE);
         updateFindVehicleButton();
+        bindBikeDetail(bike);
+
+        Marker marker = bikeMarkers.get(bike.number);
+        if (marker != null) {
+            marker.showInfoWindow();
+        }
+        if (moveCamera && bike.locationKnown) {
+            focusBikeOnMap(bike, zoomLevel);
+        }
+    }
+
+    private void bindBikeDetail(Bike bike) {
         tvBikeNumber.setText(getString(R.string.number_format, bike.number));
         tvManualNotice.setVisibility(bike.locationKnown ? View.GONE : View.VISIBLE);
 
@@ -3170,14 +3203,6 @@ public final class MainActivity extends BaseActivity implements LocationListener
                     formatUploadAge(ageMs)
             ));
             tvBikeFreshness.setVisibility(View.VISIBLE);
-        }
-
-        Marker marker = bikeMarkers.get(bike.number);
-        if (marker != null) {
-            marker.showInfoWindow();
-        }
-        if (moveCamera && bike.locationKnown) {
-            focusBikeOnMap(bike, zoomLevel);
         }
     }
 
@@ -4276,6 +4301,10 @@ public final class MainActivity extends BaseActivity implements LocationListener
                             return;
                         }
                         queryingBikeNumber = null;
+                        if (selectedBike == null
+                                || !normalized.equals(selectedBike.number)) {
+                            return;
+                        }
                         if (bike == null) {
                             DiagnosticLog.event("Query", "miss " + maskedNumber);
                             Toast.makeText(
@@ -4315,6 +4344,10 @@ public final class MainActivity extends BaseActivity implements LocationListener
                         }
                         queryingBikeNumber = null;
                         DiagnosticLog.warn("Query", "error " + maskedNumber + ": " + message);
+                        if (selectedBike == null
+                                || !normalized.equals(selectedBike.number)) {
+                            return;
+                        }
                         tvStatus.setText(message);
                     }
                 }
@@ -4662,6 +4695,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
                 try {
                     Location candidate = locationManager.getLastKnownLocation(provider);
                     if (candidate != null
+                            && isFresh(candidate, LAST_KNOWN_MAX_AGE_MS)
                             && (bestLastKnown == null
                             || candidate.getAccuracy() < bestLastKnown.getAccuracy())) {
                         bestLastKnown = candidate;
@@ -4811,17 +4845,13 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     private boolean isFresh(Location location, long windowMs) {
-        long elapsedMs = location.getElapsedRealtimeNanos() / 1_000_000L;
-        if (elapsedMs > 0L) {
-            long ageMs = SystemClock.elapsedRealtime() - elapsedMs;
-            return ageMs >= 0L && ageMs <= windowMs;
-        }
-        long timeMs = location.getTime();
-        if (timeMs > 0L) {
-            long ageMs = System.currentTimeMillis() - timeMs;
-            return ageMs >= 0L && ageMs <= windowMs;
-        }
-        return false;
+        return VehicleFinderMath.isFresh(
+                location.getElapsedRealtimeNanos(),
+                android.os.SystemClock.elapsedRealtimeNanos(),
+                location.getTime(),
+                System.currentTimeMillis(),
+                windowMs
+        );
     }
 
     private boolean isSignificantlyNewer(Location candidate) {
@@ -4841,6 +4871,10 @@ public final class MainActivity extends BaseActivity implements LocationListener
 
     @Override
     public void onLocationChanged(Location location) {
+        if (!isFresh(location, LAST_KNOWN_MAX_AGE_MS)) {
+            DiagnosticLog.event("Loc", "stale fix ignored");
+            return;
+        }
         if (!shouldAcceptLocation(location)) {
             DiagnosticLog.event("Loc", "stale fix ignored");
             return;

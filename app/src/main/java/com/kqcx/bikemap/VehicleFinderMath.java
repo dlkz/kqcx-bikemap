@@ -9,6 +9,9 @@ final class VehicleFinderMath {
     static final int TARGET_AGING = 1;
     static final int TARGET_STALE = 2;
     static final int TARGET_UNKNOWN = 3;
+    static final long DIRECTION_MAX_AGE_MS = 5_000L;
+    static final float DIRECTION_MAX_ACCURACY_METERS = 25f;
+    static final long LOCATION_REACQUIRE_MAX_WAIT_MS = 5_000L;
     private static final long TARGET_AGING_MS = 10L * 60L * 1_000L;
     private static final long TARGET_STALE_MS = 60L * 60L * 1_000L;
 
@@ -32,15 +35,28 @@ final class VehicleFinderMath {
             long nowWallTimeMs,
             long maxAgeMs
     ) {
+        long ageMs = locationAgeMs(
+                locationElapsedNanos,
+                nowElapsedNanos,
+                locationWallTimeMs,
+                nowWallTimeMs
+        );
+        return ageMs >= 0L && ageMs <= maxAgeMs;
+    }
+
+    static long locationAgeMs(
+            long locationElapsedNanos,
+            long nowElapsedNanos,
+            long locationWallTimeMs,
+            long nowWallTimeMs
+    ) {
         if (locationElapsedNanos > 0L && nowElapsedNanos > 0L) {
-            long ageMs = (nowElapsedNanos - locationElapsedNanos) / 1_000_000L;
-            return ageMs >= 0L && ageMs <= maxAgeMs;
+            return (nowElapsedNanos - locationElapsedNanos) / 1_000_000L;
         }
         if (locationWallTimeMs > 0L && nowWallTimeMs > 0L) {
-            long ageMs = nowWallTimeMs - locationWallTimeMs;
-            return ageMs >= 0L && ageMs <= maxAgeMs;
+            return nowWallTimeMs - locationWallTimeMs;
         }
-        return false;
+        return Long.MAX_VALUE;
     }
 
     static int accuracyQuality(float accuracyMeters, int previousQuality) {
@@ -85,6 +101,54 @@ final class VehicleFinderMath {
         return accuracyMeters > 0f
                 && accuracyMeters <= 20f
                 && distanceMeters <= Math.max(8f, accuracyMeters);
+    }
+
+    static boolean canUseLocationForDirection(
+            long locationAgeMs,
+            float accuracyMeters,
+            boolean providerAvailable
+    ) {
+        return providerAvailable
+                && locationAgeMs >= 0L
+                && locationAgeMs <= DIRECTION_MAX_AGE_MS
+                && accuracyMeters > 0f
+                && accuracyMeters <= DIRECTION_MAX_ACCURACY_METERS;
+    }
+
+    static boolean canShowDirectionArrow(
+            long locationAgeMs,
+            float accuracyMeters,
+            boolean providerAvailable,
+            boolean headingReliable
+    ) {
+        return headingReliable && canUseLocationForDirection(
+                locationAgeMs,
+                accuracyMeters,
+                providerAvailable
+        );
+    }
+
+    static boolean canCommitReacquiredLocation(
+            boolean gpsProvider,
+            float accuracyMeters
+    ) {
+        return gpsProvider
+                && accuracyMeters > 0f
+                && accuracyMeters <= 35f;
+    }
+
+    static boolean isAfterReacquireStart(
+            long candidateElapsedNanos,
+            long reacquireStartElapsedNanos,
+            long candidateWallTimeMs,
+            long reacquireStartWallTimeMs
+    ) {
+        if (candidateElapsedNanos > 0L && reacquireStartElapsedNanos > 0L) {
+            return candidateElapsedNanos >= reacquireStartElapsedNanos;
+        }
+        return candidateWallTimeMs > 0L
+                && reacquireStartWallTimeMs > 0L
+                && candidateWallTimeMs >= reacquireStartWallTimeMs;
     }
 
     static int targetFreshness(boolean uploadTimeKnown, long ageMs) {
