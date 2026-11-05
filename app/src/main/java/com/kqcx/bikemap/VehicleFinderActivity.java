@@ -55,6 +55,10 @@ public final class VehicleFinderActivity extends BaseActivity
     private static final String EXTRA_CURRENT_ELAPSED = "finder_current_elapsed";
     private static final String STATE_LOCATION_PERMISSION_REQUESTED =
             "finder_location_permission_requested";
+    private static final String STATE_TARGET_LATITUDE = "finder_target_latitude";
+    private static final String STATE_TARGET_LONGITUDE = "finder_target_longitude";
+    private static final String STATE_TARGET_LAST_UPLOAD = "finder_target_last_upload";
+    private static final String STATE_TARGET_SOURCE = "finder_target_source";
 
     private static final int REQUEST_LOCATION = 5101;
     private static final int ACTION_NONE = 0;
@@ -66,6 +70,7 @@ public final class VehicleFinderActivity extends BaseActivity
     private static final long LOCATION_TIMESTAMP_TOLERANCE_MS = 1_000L;
     private static final long LOCATION_SIGNIFICANTLY_NEWER_MS = 10_000L;
     private static final long LOCATION_GPS_FRESH_WINDOW_MS = 15_000L;
+    private static final long TARGET_AUTO_REFRESH_AGE_MS = 2L * 60L * 1000L;
     private static final TimeZone CHINA_TIME_ZONE = TimeZone.getTimeZone("Asia/Shanghai");
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -112,6 +117,7 @@ public final class VehicleFinderActivity extends BaseActivity
     private boolean networkProviderUnavailable;
     private boolean reacquiringLocation;
     private boolean refreshingTarget;
+    private boolean entryRefreshEvaluated;
     private boolean locationPermissionRequested;
     private int accuracyQuality = VehicleFinderMath.ACCURACY_UNKNOWN;
     private int headingSensorAccuracy = SensorManager.SENSOR_STATUS_ACCURACY_HIGH;
@@ -153,6 +159,7 @@ public final class VehicleFinderActivity extends BaseActivity
             finish();
             return;
         }
+        restoreTargetState(savedInstanceState);
 
         setContentView(R.layout.activity_vehicle_finder);
         bindViews();
@@ -266,7 +273,9 @@ public final class VehicleFinderActivity extends BaseActivity
                         currentLocation.getLongitude()
                 );
         refreshingTarget = true;
-        beginLocationReacquire();
+        if (hasLocationPermission() && isLocationEnabled()) {
+            beginLocationReacquire();
+        }
         updateRefreshButtonState();
         tvFreshness.setText(R.string.finder_refreshing_vehicle);
         repository.queryOneCar(
@@ -373,6 +382,44 @@ public final class VehicleFinderActivity extends BaseActivity
         refreshingTarget = false;
         updateRefreshButtonState();
         updateFreshness();
+    }
+
+    private boolean shouldAutoRefreshTarget() {
+        return target != null && target.needsRefresh(
+                System.currentTimeMillis(),
+                TARGET_AUTO_REFRESH_AGE_MS
+        );
+    }
+
+    private boolean shouldReacquireCurrentLocation() {
+        return hasLocationPermission()
+                && isLocationEnabled()
+                && (currentLocation == null
+                || !isFresh(currentLocation, VehicleFinderMath.DIRECTION_MAX_AGE_MS));
+    }
+
+    private void restoreTargetState(Bundle savedState) {
+        if (savedState == null || !savedState.containsKey(STATE_TARGET_SOURCE)) {
+            return;
+        }
+        VehicleFinderTargetState.Source source;
+        try {
+            source = VehicleFinderTargetState.Source.valueOf(
+                    savedState.getString(STATE_TARGET_SOURCE)
+            );
+        } catch (IllegalArgumentException | NullPointerException exception) {
+            return;
+        }
+        VehicleFinderTargetState restored = VehicleFinderTargetState.restore(
+                target.number(),
+                savedState.getDouble(STATE_TARGET_LATITUDE, target.latitude()),
+                savedState.getDouble(STATE_TARGET_LONGITUDE, target.longitude()),
+                savedState.getLong(STATE_TARGET_LAST_UPLOAD, target.lastUploadAtMs()),
+                source
+        );
+        if (restored != null) {
+            target = restored;
+        }
     }
 
     private void updateTargetSource() {
@@ -1285,8 +1332,21 @@ public final class VehicleFinderActivity extends BaseActivity
     protected void onResume() {
         super.onResume();
         registerSensors();
-        startLocationTracking(!reacquiringLocation);
-        scheduleLocationReacquireTimeout();
+        if (!entryRefreshEvaluated) {
+            entryRefreshEvaluated = true;
+            if (shouldAutoRefreshTarget()) {
+                refreshPositions();
+            } else {
+                startLocationTracking(!reacquiringLocation);
+            }
+        } else if (reacquiringLocation) {
+            startLocationTracking(false);
+            scheduleLocationReacquireTimeout();
+        } else if (shouldReacquireCurrentLocation()) {
+            beginLocationReacquire();
+        } else {
+            startLocationTracking(true);
+        }
         updateVisualsNow();
         handler.removeCallbacks(freshnessTick);
         handler.postDelayed(freshnessTick, UI_REFRESH_MS);
@@ -1317,6 +1377,10 @@ public final class VehicleFinderActivity extends BaseActivity
                 STATE_LOCATION_PERMISSION_REQUESTED,
                 locationPermissionRequested
         );
+        outState.putDouble(STATE_TARGET_LATITUDE, target.latitude());
+        outState.putDouble(STATE_TARGET_LONGITUDE, target.longitude());
+        outState.putLong(STATE_TARGET_LAST_UPLOAD, target.lastUploadAtMs());
+        outState.putString(STATE_TARGET_SOURCE, target.source().name());
         super.onSaveInstanceState(outState);
     }
 

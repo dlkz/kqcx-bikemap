@@ -70,6 +70,49 @@ public final class VehicleFinderTargetStateTest {
     }
 
     @Test
+    public void restoredSourceAndPositionArePreserved() {
+        VehicleFinderTargetState restored = VehicleFinderTargetState.restore(
+                "123456789",
+                28.69,
+                115.87,
+                2_000L,
+                VehicleFinderTargetState.Source.REFRESHED
+        );
+
+        assertNotNull(restored);
+        assertEquals(VehicleFinderTargetState.Source.REFRESHED, restored.source());
+        assertEquals(28.69, restored.latitude(), 0.000001);
+        assertEquals(115.87, restored.longitude(), 0.000001);
+        assertEquals(2_000L, restored.lastUploadAtMs());
+    }
+
+    @Test
+    public void refreshIsNeededWhenUploadIsUnknownOrTooOld() {
+        VehicleFinderTargetState unknown = VehicleFinderTargetState.createEstimated(
+                "123456789",
+                28.68,
+                115.86,
+                0L
+        );
+        VehicleFinderTargetState old = VehicleFinderTargetState.createEstimated(
+                "123456789",
+                28.68,
+                115.86,
+                1_000L
+        );
+        VehicleFinderTargetState fresh = VehicleFinderTargetState.createEstimated(
+                "123456789",
+                28.68,
+                115.86,
+                118_000L
+        );
+
+        assertTrue(unknown.needsRefresh(120_000L, 120_000L));
+        assertTrue(old.needsRefresh(121_001L, 120_000L));
+        assertFalse(fresh.needsRefresh(120_000L, 120_000L));
+    }
+
+    @Test
     public void invalidTargetIsRejected() {
         assertNull(VehicleFinderTargetState.createEstimated(
                 "123456789",

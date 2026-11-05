@@ -46,6 +46,28 @@ final class VehicleFinderTargetState {
         );
     }
 
+    static VehicleFinderTargetState restore(
+            String number,
+            double latitude,
+            double longitude,
+            long lastUploadAtMs,
+            Source source
+    ) {
+        if (source == null) {
+            return null;
+        }
+        VehicleFinderTargetState restored = createEstimated(
+                number,
+                latitude,
+                longitude,
+                lastUploadAtMs
+        );
+        if (restored != null) {
+            restored.source = source;
+        }
+        return restored;
+    }
+
     boolean applyRefresh(Bike bike) {
         if (bike == null
                 || !number.equals(bike.number)
@@ -79,6 +101,14 @@ final class VehicleFinderTargetState {
 
     Source source() {
         return source;
+    }
+
+    boolean needsRefresh(long nowMs, long maxAgeMs) {
+        if (lastUploadAtMs <= 0L) {
+            return true;
+        }
+        long ageMs = nowMs - lastUploadAtMs;
+        return ageMs > maxAgeMs;
     }
 
     private static boolean isValidCoordinate(double latitude, double longitude) {
