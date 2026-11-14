@@ -82,6 +82,7 @@ android {
         targetSdk = 36
         versionCode = appVersionCode
         versionName = appVersionName
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("int", "BUILD_NUMBER", appBuildNumber.toString())
     }
 
@@ -174,6 +175,10 @@ dependencies {
     implementation("androidx.core:core:1.13.1")
     implementation("com.google.zxing:core:3.4.1")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("com.vaadin.external.google:android-json:0.0.20131108.vaadin1")
+    androidTestImplementation("androidx.test:core:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
 }
 
 tasks.named("preBuild").configure {

@@ -195,13 +195,13 @@ final class QrGalleryStore {
                 );
                 DiagnosticLog.event(
                         "BikeMapQrDelete",
-                        "delete uri=" + pending.uri + " rows=" + deleted
+                        "delete rows=" + deleted
                 );
                 if (deleted <= 0) {
                     throw new IOException("MediaStore 未完成永久删除");
                 }
             } else {
-                DiagnosticLog.event("BikeMapQrDelete", "row already absent uri=" + pending.uri);
+                DiagnosticLog.event("BikeMapQrDelete", "row already absent");
             }
 
             String dataPath = verification.dataPath != null

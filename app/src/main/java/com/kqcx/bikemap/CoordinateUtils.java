@@ -34,6 +34,16 @@ public final class CoordinateUtils {
         return new GeoPoint(latitude + latitudeOffset, longitude + longitudeOffset);
     }
 
+    static boolean isValidLatLng(double latitude, double longitude) {
+        return !Double.isNaN(latitude)
+                && !Double.isNaN(longitude)
+                && latitude >= -90d
+                && latitude <= 90d
+                && longitude >= -180d
+                && longitude <= 180d
+                && (latitude != 0d || longitude != 0d);
+    }
+
     private static double transformLatitude(double x, double y) {
         double result = -100.0 + 2.0 * x + 3.0 * y
                 + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));

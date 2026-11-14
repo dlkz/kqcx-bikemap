@@ -144,33 +144,150 @@ public final class VehicleFinderMathTest {
         assertTrue(VehicleFinderMath.canShowDirectionArrow(
                 VehicleFinderMath.DIRECTION_MAX_AGE_MS,
                 VehicleFinderMath.DIRECTION_MAX_ACCURACY_METERS,
+                100f,
                 true,
                 true
         ));
         assertFalse(VehicleFinderMath.canShowDirectionArrow(
                 VehicleFinderMath.DIRECTION_MAX_AGE_MS + 1L,
                 20f,
+                100f,
                 true,
                 true
         ));
         assertFalse(VehicleFinderMath.canShowDirectionArrow(
                 1_000L,
                 VehicleFinderMath.DIRECTION_MAX_ACCURACY_METERS + 0.1f,
+                100f,
                 true,
                 true
         ));
         assertFalse(VehicleFinderMath.canShowDirectionArrow(
                 1_000L,
                 20f,
+                100f,
                 false,
                 true
         ));
         assertFalse(VehicleFinderMath.canShowDirectionArrow(
                 1_000L,
                 20f,
+                100f,
                 true,
                 false
         ));
+        assertFalse(VehicleFinderMath.canShowDirectionArrow(
+                1_000L,
+                10f,
+                20f,
+                true,
+                true
+        ));
+        assertTrue(VehicleFinderMath.canShowDirectionArrow(
+                1_000L,
+                5f,
+                20f,
+                true,
+                true
+        ));
+    }
+
+    @Test
+    public void directionCanBeHeldBrieflyWhenLocationGetsOldOrImprecise() {
+        assertTrue(VehicleFinderMath.canHoldDirection(
+                VehicleFinderMath.DIRECTION_HOLD_MAX_AGE_MS,
+                VehicleFinderMath.DIRECTION_HOLD_MAX_ACCURACY_METERS,
+                100f,
+                true,
+                true,
+                true
+        ));
+        assertTrue(VehicleFinderMath.canHoldDirection(
+                VehicleFinderMath.DIRECTION_MAX_AGE_MS + 1L,
+                20f,
+                60f,
+                true,
+                true,
+                true
+        ));
+        assertFalse(VehicleFinderMath.canHoldDirection(
+                VehicleFinderMath.DIRECTION_HOLD_MAX_AGE_MS + 1L,
+                20f,
+                60f,
+                true,
+                true,
+                true
+        ));
+        assertFalse(VehicleFinderMath.canHoldDirection(
+                1_000L,
+                VehicleFinderMath.DIRECTION_HOLD_MAX_ACCURACY_METERS + 0.1f,
+                100f,
+                true,
+                true,
+                true
+        ));
+        assertFalse(VehicleFinderMath.canHoldDirection(
+                1_000L,
+                20f,
+                60f,
+                true,
+                false,
+                true
+        ));
+        assertFalse(VehicleFinderMath.canHoldDirection(
+                1_000L,
+                20f,
+                60f,
+                true,
+                true,
+                false
+        ));
+        assertFalse(VehicleFinderMath.canHoldDirection(
+                1_000L,
+                30f,
+                20f,
+                true,
+                true,
+                true
+        ));
+    }
+
+    @Test
+    public void rejectsWorseLocationUnlessMeaningfullyNewer() {
+        assertFalse(VehicleFinderMath.canReplaceLocation(30f, 5f, false));
+        assertTrue(VehicleFinderMath.canReplaceLocation(30f, 5f, true));
+        assertFalse(VehicleFinderMath.canReplaceLocation(97f, 5f, true));
+        assertTrue(VehicleFinderMath.canReplaceLocation(12f, 5f, false));
+        assertTrue(VehicleFinderMath.canReplaceLocation(20f, 0f, false));
+    }
+
+    @Test
+    public void heldDirectionMustStayNearPreviousBearingAndRange() {
+        assertTrue(VehicleFinderMath.isHeldDirectionConsistent(
+                30f,
+                60f,
+                40f,
+                44f
+        ));
+        assertFalse(VehicleFinderMath.isHeldDirectionConsistent(
+                30f,
+                90f,
+                40f,
+                40f
+        ));
+        assertFalse(VehicleFinderMath.isHeldDirectionConsistent(
+                30f,
+                35f,
+                40f,
+                46f
+        ));
+    }
+
+    @Test
+    public void headingWarmupRequiresConsistentSamples() {
+        assertTrue(VehicleFinderMath.headingSamplesConsistent(359f, 2f, 12f));
+        assertTrue(VehicleFinderMath.headingSamplesConsistent(90f, 78f, 12f));
+        assertFalse(VehicleFinderMath.headingSamplesConsistent(90f, 103f, 12f));
     }
 
     @Test

@@ -2,7 +2,6 @@ package com.kqcx.bikemap;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
-import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
@@ -18,7 +17,6 @@ import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.ColorMatrix;
 import android.graphics.ColorMatrixColorFilter;
-import android.graphics.drawable.ColorDrawable;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
@@ -32,24 +30,16 @@ import android.os.PowerManager;
 import android.os.SystemClock;
 import android.provider.Settings;
 import androidx.core.app.NotificationManagerCompat;
-import android.text.Editable;
-import android.text.InputFilter;
-import android.text.TextUtils;
-import android.text.TextWatcher;
 import android.text.method.LinkMovementMethod;
 import android.text.util.Linkify;
 import android.util.TypedValue;
-import android.view.Gravity;
 import android.view.LayoutInflater;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.CheckBox;
-import android.widget.EditText;
-import android.widget.HorizontalScrollView;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -101,11 +91,9 @@ public final class MainActivity extends BaseActivity implements LocationListener
     /** 清理后残留不超过该值即视为清理成功（VACUUM 后 sqlite 仍占少量页）。 */
     private static final long MAP_CACHE_SMALL_REMAINDER_BYTES = 2L * 1024L * 1024L;
     private static final int REMINDER_FLOW_SCHEDULE = 2;
-    private static final int QR_HISTORY_LIMIT = 5;
     private static final long MARKER_TAP_GUARD_MS = 700L;
     private static final long MAP_CENTER_REFRESH_DELAY_MS = 700L;
     private static final long RECENTER_ANIMATION_MS = 700L;
-    private static final long VEHICLE_LIST_ANIMATION_MS = 220L;
     /**
      * 动画本身只跑 RECENTER_ANIMATION_MS，再多等一小段用于校验落点：
      * 动画被打断或最后一帧没落到目标点时，地图会停在半路并错误地弹出
@@ -115,18 +103,6 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private static final double CENTER_INDICATOR_DISTANCE_METERS = 25.0;
     /** 落点校验允许的误差，超过该值说明地图没有真正回到定位点。 */
     private static final double RECENTER_SETTLE_TOLERANCE_METERS = 5.0;
-    /**
-     * 居中后的一小段跟随窗口。刚启动或刚回前台时，系统可能先给出缓存的
-     * 旧定位，真正的新定位稍后才到；窗口内到达的新定位会把地图再拉回一次，
-     * 否则地图会停在旧点并错误地显示定位指示针。
-     */
-    private static final long RECENTER_FOLLOW_WINDOW_MS = 6000L;
-    /**
-     * 后台挂起较久后回到前台时，系统常常只给到很久以前的缓存定位，真正的新定位
-     * 要等 GPS 重新捕获，往往超过固定的跟随窗口。用户主动点“重新定位”后，跟随
-     * 逻辑要一直等到收到比这次点击更新的定位为止，最长等待该时长。
-     */
-    private static final long RECENTER_FRESH_FIX_TIMEOUT_MS = 60_000L;
     /** 新旧定位时间差小于该值时，视为同一时刻的定位。 */
     private static final long LOCATION_TIMESTAMP_TOLERANCE_MS = 1_000L;
     /** network 定位要覆盖当前 GPS 定位，至少需要新这么多。 */
@@ -136,7 +112,6 @@ public final class MainActivity extends BaseActivity implements LocationListener
     /** 首次启动时只接受这个时限内的缓存定位，避免把旧位置当作当前位置。 */
     private static final long LAST_KNOWN_MAX_AGE_MS = 120_000L;
     /** 精度差超过该值时，旧定位不能覆盖当前定位。 */
-    private static final float LOCATION_ACCURACY_MARGIN_METERS = 50.0f;
     /**
      * The 512-pixel tile source doubles the pixel scale of a classic 256-pixel
      * source, so 16.0 keeps roughly the same view span as the old 17.0 setting.
@@ -165,10 +140,6 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private static final String PREF_VEHICLE_ALERT_AUTOSTART_PROMPTED = "vehicle_alert_autostart_prompted";
     private static final String PREF_VEHICLE_ALERT_WAITING_NOTIFICATION =
             "vehicle_alert_waiting_notification";
-    private static final String PREF_QR_HISTORY = "qr_history";
-    private static final String PREF_KEEP_QR_HISTORY = "keep_qr_history";
-    private static final String PREF_NUMBER_SITE_ID = "number_site_id";
-    private static final String PREF_NUMBER_SERIES = "number_series";
     private static final String PREF_REMINDER_LEAD_MINUTES = "reminder_lead_minutes";
     private static final String PREF_REMINDER_ALERT_MODE = "reminder_alert_mode";
     private static final String PREF_REMINDER_SETUP_PROMPTED = "reminder_setup_prompted";
@@ -195,8 +166,6 @@ public final class MainActivity extends BaseActivity implements LocationListener
     );
     /** 说明类文本里用于标记分组标题的前缀（渲染时去掉）。 */
     private static final String GROUP_HEADING_MARKER = "## ";
-    private static final long MIN_REFRESH_INTERVAL_MS = 10_000L;
-    private static final double MIN_REFRESH_DISTANCE_METERS = 80.0;
 
     /**
      * Mainland China tile service using GCJ-02 coordinates and 512-pixel
@@ -231,37 +200,29 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     private BikeRepository repository;
+    private FinderSnapshotStore finderSnapshotStore;
+    private FinderSnapshotCapture finderSnapshotCapture;
+    private QrHistoryStore qrHistoryStore;
     private QrGalleryStore qrGalleryStore;
     private VehicleNumberCatalog vehicleNumberCatalog;
-    private boolean vehicleNumberCatalogLoadFinished;
-    private Runnable numberCatalogRefresh;
+    private VehicleNumberInputController vehicleNumberInputController;
     private SharedPreferences appPreferences;
     private final List<Bike> bikes = new ArrayList<>();
     private final Map<String, Marker> bikeMarkers = new HashMap<>();
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private final Runnable refreshFromMapCenterRunnable = this::refreshFromMapCenter;
+    private final MapRecenterState recenterState = new MapRecenterState();
+    private final NearbyQueryState nearbyQueryState = new NearbyQueryState();
 
     private AppMapView mapView;
     private TextView tvStatus;
     private TextView tvDataLabel;
-    private TextView tvBikeNumber;
-    private TextView tvBikeMeta;
-    private TextView tvBikeFreshness;
-    private TextView tvManualNotice;
     private TextView tvSettingsVersion;
     private TextView tvVehicleAlertStatus;
-    private TextView tvVehicleListSubtitle;
-    private TextView btnVehicleListExpand;
     private TextView tvVehicleListModeSummary;
-    private LinearLayout bikePanel;
-    private LinearLayout vehicleListPanel;
-    private LinearLayout vehicleCardsRow;
-    private LinearLayout vehicleListRows;
-    private HorizontalScrollView vehicleListCardScroll;
-    private ScrollView vehicleListScroll;
+    private VehicleListPanelController vehicleListPanelController;
+    private BikeDetailPanelController bikeDetailPanelController;
     private View settingsPanel;
-    private Button btnFindVehicle;
-    private Button btnShowQr;
     private ImageButton btnRefresh;
     private ImageButton btnReminder;
     private LinearLayout rowAdvanced;
@@ -280,8 +241,6 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private ImageView mapCenterIndicator;
     private final SimpleDateFormat refreshTimeFormat =
             new SimpleDateFormat("HH:mm:ss", Locale.CHINA);
-    private final SimpleDateFormat uploadTimeFormat =
-            new SimpleDateFormat("MM-dd HH:mm", Locale.CHINA);
 
     private LocationManager locationManager;
     private Location currentLocation;
@@ -289,57 +248,18 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private UserLocationCallout userLocationCallout;
     private MapLabelOverlay mapLabelOverlay;
     private Marker userMarker;
-    private GeoPoint lastRequestedCenter;
-    private GeoPoint pendingRequestCenter;
     private Bike selectedBike;
-    private long lastFetchAtMs;
     /** 最近一次附近查询返回的车辆总数，用于区分“没查到车”和“全是不可用车”。 */
     private int lastNearbyRawCount;
     private long lastMarkerTapAt;
-    private int systemBarsBottom;
-    private ValueAnimator vehicleListAnimator;
-    private boolean vehicleListExpanded;
     private String pendingQrNumber = "";
     private Bitmap pendingQrBitmap;
     private boolean pendingOpenWeChatAfterQrSave;
-    private boolean requestInFlight;
-    private boolean pendingRequestForce;
     private boolean permissionDialogShowing;
-    private boolean initialLocationCentered;
-    private boolean recenterInProgress;
-    /** 还没有定位结果时按下“重新定位”，等首个定位回调到达后再居中。 */
-    private boolean pendingRecenterOnFix;
-    /** 正在等待本次居中动画结束后的落点校验。 */
-    private boolean recenterSettlePending;
-    /** 本次居中期间用户自己操作过地图，校验时不再抢回镜头。 */
-    private boolean recenterUserInterrupted;
-    /** 居中后跟随窗口的截止时间（elapsedRealtime，含深度休眠时间）。 */
-    private long recenterFollowUntilMs;
-    /** 本次居中要落到的缩放级别，跟随窗口复用该值。 */
-    private double recenterZoom = RECENTER_ZOOM;
-    /**
-     * 用户按下“重新定位”的时刻（elapsedRealtime）。非 0 表示还没收到比这次点击
-     * 更新的定位；此时即使固定跟随窗口到期，也要继续跟随，直到新定位到达或超时。
-     */
-    private long recenterAwaitFixSinceElapsedMs;
-    /** 防止旧的落点校验回调消费新一次居中状态。 */
-    private int recenterGeneration;
-    /**
-     * 点名查车（按编号定位）优先于自身定位跟随。置位后，居中落点校验和
-     * 6 秒跟随窗口都不会把镜头从目标车拉回自身定位点，直到用户按“重新定位”
-     * 回到自身视角才解除。
-     */
-    private boolean vehicleFocusActive;
     /** 按编号点名查到的车。它不在附近列表里，重查后要并回地图，避免标记消失。 */
     private Bike queriedBike;
     /** 正在点名查询的车号，用于合并重复请求。 */
     private String queryingBikeNumber;
-    /**
-     * 通过编号点名定位车辆时，镜头会离开自身定位点；这种“主动查看某辆车”
-     * 的场景不应弹出“偏离自身定位”的中心指示针。置位后直到用户自己操作
-     * 地图或按“重新定位”才恢复原有判定。
-     */
-    private boolean suppressCenterIndicator;
     private CountDownTimer reminderDialogTimer;
     private int pendingReminderLeadMinutes = ReminderScheduler.DEFAULT_LEAD_MINUTES;
     private String pendingReminderAlertMode = ReminderScheduler.MODE_SOUND_VIBRATE;
@@ -383,6 +303,12 @@ public final class MainActivity extends BaseActivity implements LocationListener
         repository = new BikeRepository(this);
         qrGalleryStore = new QrGalleryStore(getApplicationContext(), PREFS_APP);
         appPreferences = getSharedPreferences(PREFS_APP, MODE_PRIVATE);
+        qrHistoryStore = new QrHistoryStore(appPreferences);
+        finderSnapshotStore = new FinderSnapshotStore(this);
+        finderSnapshotCapture = new FinderSnapshotCapture(
+                finderSnapshotStore,
+                repository
+        );
         awaitingVehicleAlertNotificationPermission = appPreferences.getBoolean(
                 PREF_VEHICLE_ALERT_WAITING_NOTIFICATION,
                 false
@@ -391,6 +317,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
         // （接近 ANR）。先用空目录占位，所有代码路径都能拿到非 null 实例，解析完成后
         // 再替换并刷新“数据最后更新于”文案。
         vehicleNumberCatalog = VehicleNumberCatalog.empty();
+        vehicleNumberInputController = createVehicleNumberInputController();
         loadVehicleNumberCatalogAsync();
 
         // 上次在系统设置页里没走完的提醒权限流程，重建后继续。
@@ -400,7 +327,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
         configureMap();
         setupClickListeners();
         setupSettings();
-        setupVehicleListPanel();
+        vehicleListPanelController.setup();
         updateReminderButtonState();
         applyVehicleAlertState();
         cleanupExpiredQrSaves();
@@ -416,21 +343,62 @@ public final class MainActivity extends BaseActivity implements LocationListener
                     hideSettings();
                     return;
                 }
-                if (vehicleListPanel.getVisibility() == View.VISIBLE) {
-                    if (vehicleListExpanded) {
-                        setVehicleListExpanded(false, true);
+                if (vehicleListPanelController.isVisible()) {
+                    if (vehicleListPanelController.isExpanded()) {
+                        vehicleListPanelController.setExpanded(false, true);
                     } else {
-                        hideVehicleList();
+                        vehicleListPanelController.hide();
                     }
                     return;
                 }
-                if (bikePanel.getVisibility() == View.VISIBLE) {
+                if (bikeDetailPanelController.isVisible()) {
                     hideBikePanel();
                     return;
                 }
                 finish();
             }
         });
+    }
+
+    private VehicleNumberInputController createVehicleNumberInputController() {
+        return new VehicleNumberInputController(
+                this,
+                appPreferences,
+                finderSnapshotStore,
+                qrHistoryStore,
+                vehicleNumberCatalog,
+                false,
+                new VehicleNumberInputController.Host() {
+                    @Override
+                    public String selectedBikeNumber() {
+                        return selectedBike == null ? "" : selectedBike.number;
+                    }
+
+                    @Override
+                    public void openNumber(String number) {
+                        Bike bike = findOrCreateBike(number);
+                        showBikeDetail(bike, true);
+                        if (!bike.locationKnown) {
+                            queryBikeByNumber(number);
+                        }
+                    }
+
+                    @Override
+                    public void clearHistory() {
+                        clearQrHistory();
+                    }
+
+                    @Override
+                    public void openSnapshot(FinderSnapshotStore.Snapshot snapshot) {
+                        openFinderSnapshot(snapshot);
+                    }
+
+                    @Override
+                    public void openHistory(QrHistoryStore.Entry entry) {
+                        openQrHistoryEntry(entry);
+                    }
+                }
+        );
     }
 
     /**
@@ -460,32 +428,93 @@ public final class MainActivity extends BaseActivity implements LocationListener
                 if (resolved != null) {
                     vehicleNumberCatalog = resolved;
                 }
-                vehicleNumberCatalogLoadFinished = true;
                 applyCatalogUpdatedAt(findViewById(R.id.tvNumberDataUpdated));
-                if (numberCatalogRefresh != null) {
-                    numberCatalogRefresh.run();
-                }
+                vehicleNumberInputController.setCatalog(
+                        vehicleNumberCatalog,
+                        true
+                );
             });
         }, "vehicle-number-catalog").start();
     }
 
     private void bindViews() {
+        View root = findViewById(R.id.root);
         mapView = findViewById(R.id.map);
         tvStatus = findViewById(R.id.tvStatus);
         tvDataLabel = findViewById(R.id.tvDataLabel);
-        tvBikeNumber = findViewById(R.id.tvBikeNumber);
-        tvBikeMeta = findViewById(R.id.tvBikeMeta);
-        tvBikeFreshness = findViewById(R.id.tvBikeFreshness);
-        tvManualNotice = findViewById(R.id.tvManualNotice);
-        bikePanel = findViewById(R.id.bikePanel);
-        vehicleListPanel = findViewById(R.id.vehicleListPanel);
-        tvVehicleListSubtitle = findViewById(R.id.tvVehicleListSubtitle);
-        btnVehicleListExpand = findViewById(R.id.btnVehicleListExpand);
         tvVehicleListModeSummary = findViewById(R.id.tvVehicleListModeSummary);
-        vehicleListCardScroll = findViewById(R.id.vehicleListCardScroll);
-        vehicleCardsRow = findViewById(R.id.vehicleListCardsRow);
-        vehicleListScroll = findViewById(R.id.vehicleListScroll);
-        vehicleListRows = findViewById(R.id.vehicleListRows);
+        vehicleListPanelController = new VehicleListPanelController(
+                this,
+                root,
+                new VehicleListPanelController.Host() {
+                    @Override
+                    public boolean isSelected(Bike bike) {
+                        return selectedBike != null
+                                && selectedBike.number.equals(bike.number);
+                    }
+
+                    @Override
+                    public String siteName(Bike bike) {
+                        return siteDisplayName(bike);
+                    }
+
+                    @Override
+                    public String distanceLabel(Bike bike) {
+                        return formatDistance(bike.distanceMeters);
+                    }
+
+                    @Override
+                    public String batteryLabel(Bike bike) {
+                        return formatBatteryLabel(bike);
+                    }
+
+                    @Override
+                    public void locate(Bike bike) {
+                        focusBikeOnMap(bike, null);
+                    }
+
+                    @Override
+                    public void select(Bike bike) {
+                        showBikeDetail(bike, true);
+                    }
+                }
+        );
+        bikeDetailPanelController = new BikeDetailPanelController(
+                this,
+                root,
+                new BikeDetailPanelController.Host() {
+                    @Override
+                    public String batteryValue(Bike bike) {
+                        return formatBattery(bike.batteryPercent);
+                    }
+
+                    @Override
+                    public String distanceLabel(Bike bike) {
+                        return formatDistance(bike.distanceMeters);
+                    }
+
+                    @Override
+                    public String uploadAgeLabel(long ageMs) {
+                        return formatUploadAge(ageMs);
+                    }
+
+                    @Override
+                    public void showQr(Bike bike) {
+                        showQrDialog(bike);
+                    }
+
+                    @Override
+                    public void findVehicle(Bike bike) {
+                        long snapshotCapturedAtMs = captureFinderSnapshot(bike, false);
+                        startActivity(VehicleFinderActivity.createIntent(
+                                MainActivity.this,
+                                bike,
+                                currentLocation,
+                                snapshotCapturedAtMs
+                        ));
+                    }
+                }
+        );
         settingsPanel = findViewById(R.id.settingsPanel);
         tvSettingsVersion = findViewById(R.id.tvSettingsVersion);
         tvVehicleAlertStatus = findViewById(R.id.tvVehicleAlertStatus);
@@ -503,8 +532,6 @@ public final class MainActivity extends BaseActivity implements LocationListener
         switchFilterUnavailable = findViewById(R.id.switchFilterUnavailable);
         applyCatalogUpdatedAt(findViewById(R.id.tvNumberDataUpdated));
         mapCenterIndicator = findViewById(R.id.mapCenterIndicator);
-        btnFindVehicle = findViewById(R.id.btnFindVehicle);
-        btnShowQr = findViewById(R.id.btnShowQr);
         btnRefresh = findViewById(R.id.btnRefresh);
         btnReminder = findViewById(R.id.btnReminder);
     }
@@ -544,15 +571,12 @@ public final class MainActivity extends BaseActivity implements LocationListener
         View settingsHeader = findViewById(R.id.settingsHeader);
         View advancedHeader = findViewById(R.id.advancedHeader);
         View bottomArea = findViewById(R.id.bottomArea);
-        View vehicleListPanelView = findViewById(R.id.vehicleListPanel);
         int topBannerBaseMargin = dp(16);
         int settingsHeaderBaseHeight = dp(64);
         int bottomAreaBasePadding = dp(14);
-        int vehicleListBaseBottomMargin = dp(88);
 
         ViewCompat.setOnApplyWindowInsetsListener(root, (view, windowInsets) -> {
             Insets systemBars = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars());
-            systemBarsBottom = systemBars.bottom;
 
             ViewGroup.MarginLayoutParams bannerParams =
                     (ViewGroup.MarginLayoutParams) topBanner.getLayoutParams();
@@ -568,26 +592,10 @@ public final class MainActivity extends BaseActivity implements LocationListener
                     bottomArea.getPaddingRight(),
                     bottomAreaBasePadding + systemBars.bottom
             );
-            ViewGroup.MarginLayoutParams listParams =
-                    (ViewGroup.MarginLayoutParams) vehicleListPanelView.getLayoutParams();
-            listParams.bottomMargin = vehicleListBaseBottomMargin + systemBars.bottom;
-            vehicleListPanelView.setLayoutParams(listParams);
+            vehicleListPanelController.setBottomInset(systemBars.bottom);
             return windowInsets;
         });
         ViewCompat.requestApplyInsets(root);
-    }
-
-    /** 全屏页面标题栏统一避让状态栏。 */
-    private void applyHeaderInsets(View header, int baseHeight, int topInset) {
-        ViewGroup.LayoutParams params = header.getLayoutParams();
-        params.height = baseHeight + topInset;
-        header.setLayoutParams(params);
-        header.setPadding(
-                header.getPaddingLeft(),
-                topInset,
-                header.getPaddingRight(),
-                header.getPaddingBottom()
-        );
     }
 
     private void configureMap() {
@@ -609,16 +617,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
 
             @Override
             public void onUserGestureStart() {
-                // 用户自己动了地图，恢复“偏离自身定位才显示指示针”的默认判定。
-                suppressCenterIndicator = false;
-                // 用户自己动过地图就不再自动居中，避免把镜头抢回去。
-                if (recenterSettlePending
-                        || recenterAwaitFixSinceElapsedMs != 0L
-                        || SystemClock.elapsedRealtime() < recenterFollowUntilMs) {
-                    recenterUserInterrupted = true;
-                }
-                // 用户已经接管地图，停止等待后台恢复后的新定位。
-                recenterAwaitFixSinceElapsedMs = 0L;
+                recenterState.onUserGestureStart(SystemClock.elapsedRealtime());
             }
 
             @Override
@@ -679,7 +678,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
             if (currentLocation == null) {
                 // 定位还没出来时不能直接返回，否则按钮在用户看来就是“没反应”；
                 // 记下意图，等首个定位回调到达后再居中。
-                pendingRecenterOnFix = true;
+                recenterState.requestPendingRecenter();
                 return;
             }
             recenterToCurrentLocation();
@@ -692,22 +691,11 @@ public final class MainActivity extends BaseActivity implements LocationListener
             loadBikes(center, true);
         });
         findViewById(R.id.btnScan).setOnClickListener(view -> openWeChatScanner());
-        findViewById(R.id.btnInputNumber).setOnClickListener(view -> showNumberInput());
+        findViewById(R.id.btnInputNumber).setOnClickListener(
+                view -> vehicleNumberInputController.show("")
+        );
         findViewById(R.id.btnSettings).setOnClickListener(view -> showSettings());
-        btnShowQr.setOnClickListener(view -> {
-            if (selectedBike != null) {
-                showQrDialog(selectedBike);
-            }
-        });
-        btnFindVehicle.setOnClickListener(view -> {
-            if (selectedBike != null && selectedBike.locationKnown) {
-                startActivity(VehicleFinderActivity.createIntent(
-                        this,
-                        selectedBike,
-                        currentLocation
-                ));
-            }
-        });
+        bikeDetailPanelController.setup();
     }
 
     private void setupSettings() {
@@ -745,11 +733,9 @@ public final class MainActivity extends BaseActivity implements LocationListener
         );
 
         SharedPreferences preferences = appPreferences;
-        switchKeepHistory.setChecked(
-                preferences.getBoolean(PREF_KEEP_QR_HISTORY, true)
-        );
+        switchKeepHistory.setChecked(qrHistoryStore.retentionEnabled());
         switchKeepHistory.setOnCheckedChangeListener((button, checked) -> {
-            preferences.edit().putBoolean(PREF_KEEP_QR_HISTORY, checked).apply();
+            qrHistoryStore.setRetentionEnabled(checked);
             if (!checked) {
                 clearQrHistory();
             }
@@ -838,50 +824,6 @@ public final class MainActivity extends BaseActivity implements LocationListener
         findViewById(R.id.rowAdvancedOptions).setOnClickListener(view -> showAdvancedPage());
     }
 
-    @SuppressLint("ClickableViewAccessibility")
-    private void setupVehicleListPanel() {
-        findViewById(R.id.btnVehicleListClose).setOnClickListener(view -> hideVehicleList());
-        btnVehicleListExpand.setOnClickListener(
-                view -> setVehicleListExpanded(!vehicleListExpanded, true)
-        );
-
-        View dragHandle = findViewById(R.id.vehicleListDragHandle);
-        dragHandle.setOnClickListener(
-                view -> setVehicleListExpanded(!vehicleListExpanded, true)
-        );
-        dragHandle.setOnTouchListener(new View.OnTouchListener() {
-            private float downY;
-
-            @Override
-            public boolean onTouch(View view, MotionEvent event) {
-                if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                    downY = event.getY();
-                    return true;
-                }
-                if (event.getActionMasked() == MotionEvent.ACTION_UP) {
-                    float delta = event.getY() - downY;
-                    if (delta < -dp(14)) {
-                        setVehicleListExpanded(true, true);
-                    } else if (delta > dp(14)) {
-                        setVehicleListExpanded(false, true);
-                    } else {
-                        view.performClick();
-                    }
-                    return true;
-                }
-                return event.getActionMasked() != MotionEvent.ACTION_CANCEL;
-            }
-        });
-
-        vehicleListCardScroll.setOnTouchListener((view, event) -> {
-            int action = event.getActionMasked();
-            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
-                view.postDelayed(this::snapVehicleCardsToNearest, 180L);
-            }
-            return false;
-        });
-    }
-
     private void showVehicleListModeDialog() {
         String[] modes = {
                 getString(R.string.vehicle_list_mode_map_cards),
@@ -899,8 +841,8 @@ public final class MainActivity extends BaseActivity implements LocationListener
                             .putInt(PREF_VEHICLE_LIST_MODE, mode)
                             .apply();
                     updateVehicleListModeSummary(mode);
-                    if (vehicleListPanel.getVisibility() == View.VISIBLE) {
-                        setVehicleListExpanded(
+                    if (vehicleListPanelController.isVisible()) {
+                        vehicleListPanelController.setExpanded(
                                 mode == VEHICLE_LIST_MODE_HALF_LIST,
                                 true
                         );
@@ -1222,7 +1164,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     private void showSettings() {
-        hideVehicleList();
+        vehicleListPanelController.hide();
         updateMapCacheSizeLabel();
         settingsPanel.setVisibility(View.VISIBLE);
     }
@@ -1664,7 +1606,10 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private void continueReminderFirstUseExactAlarm() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
                 && !ReminderScheduler.canScheduleExactAlarms(this)) {
-            showReminderExactAlarmIntroDialog();
+            showExactAlarmPermissionDialog(
+                    false,
+                    this::showExactAlarmRequiredAndReturn
+            );
             return;
         }
         continueReminderChannelCheck();
@@ -1738,36 +1683,36 @@ public final class MainActivity extends BaseActivity implements LocationListener
 
     private void continueAfterChannelCheck() {
         if (reminderFlow == REMINDER_FLOW_FIRST_USE) {
-            continueReminderFirstUseBatteryOptimization();
+            continueReminderBatteryOptimization(this::finishReminderFirstUseFlow);
         } else if (reminderFlow == REMINDER_FLOW_SCHEDULE) {
-            continueScheduleBatteryOptimization();
+            continueReminderBatteryOptimization(this::finishScheduleReminder);
         } else {
             resetReminderSetupState();
         }
     }
 
     @SuppressLint("InlinedApi")
-    private void showReminderExactAlarmIntroDialog() {
+    private void showExactAlarmPermissionDialog(boolean cancelable, Runnable onDecline) {
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(R.string.reminder_exact_alarm_title)
                 .setMessage(R.string.reminder_exact_alarm_message)
-                .setCancelable(false)
+                .setCancelable(cancelable)
                 .setPositiveButton(
                         R.string.reminder_exact_alarm_open,
                         (ignored, which) -> openExactAlarmSettings()
                 )
                 .setNegativeButton(
                         R.string.permission_not_now,
-                        (ignored, which) -> showExactAlarmRequiredAndReturn()
+                        (ignored, which) -> onDecline.run()
                 )
                 .create();
         dialog.show();
     }
 
     @SuppressLint("BatteryLife")
-    private void continueReminderFirstUseBatteryOptimization() {
+    private void continueReminderBatteryOptimization(Runnable onDone) {
         if (isIgnoringBatteryOptimizations()) {
-            offerReminderOemBackgroundGuidance(this::finishReminderFirstUseFlow);
+            offerReminderOemBackgroundGuidance(onDone);
             return;
         }
         AlertDialog dialog = new AlertDialog.Builder(this)
@@ -1782,7 +1727,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
                         R.string.permission_not_now,
                         (ignored, which) -> {
                             awaitingBatteryOptimizationPermission = false;
-                            finishReminderFirstUseFlow();
+                            onDone.run();
                         }
                 )
                 .create();
@@ -2153,10 +2098,6 @@ public final class MainActivity extends BaseActivity implements LocationListener
         }
     }
 
-    private void showReminderRiskNotice() {
-        showReminderRiskNotice(true, null, null);
-    }
-
     private void showReminderRiskNotice(Runnable onAccepted, Runnable onCancelled) {
         showReminderRiskNotice(false, onAccepted, onCancelled);
     }
@@ -2299,26 +2240,10 @@ public final class MainActivity extends BaseActivity implements LocationListener
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
                 && !ReminderScheduler.canScheduleExactAlarms(this)) {
-            showExactAlarmPermissionDialog();
+            showExactAlarmPermissionDialog(true, this::resetReminderSetupState);
             return;
         }
         continueReminderChannelCheck();
-    }
-
-    private void showExactAlarmPermissionDialog() {
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(R.string.reminder_exact_alarm_title)
-                .setMessage(R.string.reminder_exact_alarm_message)
-                .setPositiveButton(
-                        R.string.reminder_exact_alarm_open,
-                        (ignored, which) -> openExactAlarmSettings()
-                )
-                .setNegativeButton(
-                        R.string.permission_not_now,
-                        (ignored, which) -> resetReminderSetupState()
-                )
-                .create();
-        dialog.show();
     }
 
     @SuppressLint("InlinedApi")
@@ -2430,32 +2355,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
         ReminderScheduler.cancel(this);
         resetReminderSetupState();
         updateReminderButtonState();
-        showExactAlarmPermissionDialog();
-    }
-
-    @SuppressLint("BatteryLife")
-    private void continueScheduleBatteryOptimization() {
-        if (isIgnoringBatteryOptimizations()) {
-            offerReminderOemBackgroundGuidance(this::finishScheduleReminder);
-            return;
-        }
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(R.string.reminder_battery_optimization_title)
-                .setMessage(R.string.reminder_battery_optimization_message)
-                .setCancelable(false)
-                .setPositiveButton(
-                        R.string.reminder_battery_optimization_open,
-                        (ignored, which) -> openBatteryOptimizationSettings()
-                )
-                .setNegativeButton(
-                        R.string.permission_not_now,
-                        (ignored, which) -> {
-                            awaitingBatteryOptimizationPermission = false;
-                            finishScheduleReminder();
-                        }
-                )
-                .create();
-        dialog.show();
+        showExactAlarmPermissionDialog(true, this::resetReminderSetupState);
     }
 
     private void finishScheduleReminder() {
@@ -2630,9 +2530,9 @@ public final class MainActivity extends BaseActivity implements LocationListener
         InfoWindow.closeAllInfoWindowsOn(mapView);
         if (settingsPanel.getVisibility() == View.VISIBLE) {
             hideSettings();
-        } else if (vehicleListPanel.getVisibility() == View.VISIBLE) {
-            hideVehicleList();
-        } else if (bikePanel.getVisibility() == View.VISIBLE) {
+        } else if (vehicleListPanelController.isVisible()) {
+            vehicleListPanelController.hide();
+        } else if (bikeDetailPanelController.isVisible()) {
             hideBikePanel();
         }
     }
@@ -2641,7 +2541,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
         for (Marker marker : bikeMarkers.values()) {
             marker.closeInfoWindow();
         }
-        bikePanel.setVisibility(View.GONE);
+        bikeDetailPanelController.hide();
         selectedBike = null;
         updateMarkerSelection();
     }
@@ -2709,27 +2609,31 @@ public final class MainActivity extends BaseActivity implements LocationListener
             return;
         }
         long now = System.currentTimeMillis();
-        if (requestInFlight) {
-            pendingRequestCenter = new GeoPoint(
-                    center.getLatitude(),
-                    center.getLongitude()
-            );
-            pendingRequestForce = pendingRequestForce || force;
-            return;
-        }
-        if (!force
-                && lastRequestedCenter != null
-                && distanceBetween(lastRequestedCenter, center) < MIN_REFRESH_DISTANCE_METERS
-                && now - lastFetchAtMs < MIN_REFRESH_INTERVAL_MS) {
+        NearbyQueryState.Center lastCenter =
+                nearbyQueryState.lastRequestedCenter();
+        double distanceFromLastRequest = lastCenter == null
+                ? Double.POSITIVE_INFINITY
+                : distanceBetween(
+                        lastCenter.latitude,
+                        lastCenter.longitude,
+                        center.getLatitude(),
+                        center.getLongitude()
+                );
+        NearbyQueryState.Action action = nearbyQueryState.submit(
+                center.getLatitude(),
+                center.getLongitude(),
+                force,
+                now,
+                distanceFromLastRequest
+        );
+        if (action != NearbyQueryState.Action.START) {
             return;
         }
 
-        requestInFlight = true;
-        lastRequestedCenter = new GeoPoint(center.getLatitude(), center.getLongitude());
-        lastFetchAtMs = now;
         tvStatus.setText(R.string.status_loading);
         btnRefresh.setEnabled(false);
         DiagnosticLog.event("Net", "nearby request");
+        int requestGeneration = nearbyQueryState.generation();
 
         repository.fetchNearby(
                 center.getLatitude(),
@@ -2737,34 +2641,44 @@ public final class MainActivity extends BaseActivity implements LocationListener
                 new BikeRepository.Callback() {
                     @Override
                     public void onSuccess(List<Bike> result, long fetchedAt) {
-                        DiagnosticLog.event("Net", "nearby ok n=" + result.size());
                         if (isFinishing() || isDestroyed()) {
                             return;
                         }
-                        bikes.clear();
-                        bikes.addAll(result);
-                        lastNearbyRawCount = result.size();
-                        filterUnavailableBikes();
-                        mergeQueriedBike();
-                        syncSelectedBikeAfterRefresh();
-                        renderMap();
-                        refreshVehicleListIfVisible();
-                        updateDataRefreshTime(fetchedAt);
-                        finishLoadRequest();
+                        if (!nearbyQueryState.isCurrent(requestGeneration)) {
+                            return;
+                        }
+                        DiagnosticLog.event("Net", "nearby ok n=" + result.size());
+                        applyNearbyResult(result, fetchedAt);
+                        finishLoadRequest(requestGeneration);
                         updateViewportStatus();
                     }
 
                     @Override
                     public void onError(String message) {
-                        DiagnosticLog.warn("Net", "nearby error: " + message);
                         if (isFinishing() || isDestroyed()) {
                             return;
                         }
+                        if (!nearbyQueryState.isCurrent(requestGeneration)) {
+                            return;
+                        }
+                        DiagnosticLog.warn("Net", "nearby error: " + message);
                         tvStatus.setText(message);
-                        finishLoadRequest();
+                        finishLoadRequest(requestGeneration);
                     }
                 }
         );
+    }
+
+    private void applyNearbyResult(List<Bike> result, long fetchedAt) {
+        bikes.clear();
+        bikes.addAll(result);
+        lastNearbyRawCount = result.size();
+        filterUnavailableBikes();
+        mergeQueriedBike();
+        syncSelectedBikeAfterRefresh();
+        renderMap();
+        vehicleListPanelController.refresh(bikes);
+        updateDataRefreshTime(fetchedAt);
     }
 
     /**
@@ -2805,28 +2719,23 @@ public final class MainActivity extends BaseActivity implements LocationListener
         for (Bike bike : bikes) {
             if (bike.number.equals(selectedNumber)) {
                 selectedBike = bike;
-                updateFindVehicleButton();
-                if (bikePanel.getVisibility() == View.VISIBLE) {
-                    bindBikeDetail(bike);
-                }
+                bikeDetailPanelController.update(bike);
                 return;
             }
         }
         hideBikePanel();
     }
 
-    private void finishLoadRequest() {
-        requestInFlight = false;
-        btnRefresh.setEnabled(true);
-        if (pendingRequestCenter == null) {
+    private void finishLoadRequest(int requestGeneration) {
+        if (!nearbyQueryState.isCurrent(requestGeneration)) {
             return;
         }
-
-        GeoPoint nextCenter = pendingRequestCenter;
-        boolean nextForce = pendingRequestForce;
-        pendingRequestCenter = null;
-        pendingRequestForce = false;
-        loadBikes(nextCenter, nextForce);
+        NearbyQueryState.Pending pending = nearbyQueryState.finish(requestGeneration);
+        btnRefresh.setEnabled(true);
+        if (pending == null) {
+            return;
+        }
+        loadBikes(new GeoPoint(pending.latitude, pending.longitude), pending.force);
     }
 
     private void updateDataRefreshTime(long fetchedAt) {
@@ -2867,7 +2776,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
      * current viewport.
      */
     private void updateViewportStatus() {
-        if (requestInFlight || isFinishing() || isDestroyed()) {
+        if (nearbyQueryState.isInFlight() || isFinishing() || isDestroyed()) {
             return;
         }
         if (bikes.isEmpty()) {
@@ -2992,26 +2901,15 @@ public final class MainActivity extends BaseActivity implements LocationListener
      */
     private void recenterToCurrentLocation(double targetZoom, boolean startFollowWindow) {
         if (currentLocation == null) {
-            pendingRecenterOnFix = true;
+            recenterState.requestPendingRecenter();
             return;
         }
-        pendingRecenterOnFix = false;
-        // 回到自身定位即结束“点名查车优先”，恢复默认的自身定位跟随。
-        vehicleFocusActive = false;
-        if (startFollowWindow) {
-            recenterFollowUntilMs =
-                    SystemClock.elapsedRealtime() + RECENTER_FOLLOW_WINDOW_MS;
-            // 记录本次点击时刻：后台挂起后拿到的可能是很久以前的缓存点，
-            // 直到收到比它更新的定位，跟随逻辑才算结束。
-            recenterAwaitFixSinceElapsedMs = SystemClock.elapsedRealtime();
-        }
-        recenterZoom = targetZoom;
+        recenterState.beginRecenter(
+                targetZoom,
+                startFollowWindow,
+                SystemClock.elapsedRealtime()
+        );
         GeoPoint target = currentLocationDisplayPoint();
-        recenterInProgress = true;
-        // 回到自身定位属于默认视角，取消点名定位期间的指示针抑制。
-        suppressCenterIndicator = false;
-        recenterSettlePending = true;
-        recenterUserInterrupted = false;
         mapCenterIndicator.setVisibility(View.GONE);
         // 先停掉可能在跑的缩放/平移动画，避免它覆盖本次定位结果。
         mapView.getController().stopAnimation(false);
@@ -3021,7 +2919,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
                 RECENTER_ANIMATION_MS
         );
         loadBikes(target, true);
-        int generation = ++recenterGeneration;
+        int generation = recenterState.generation();
         mapView.postDelayed(
                 () -> settleRecenter(generation),
                 RECENTER_SETTLE_DELAY_MS
@@ -3029,30 +2927,26 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     private void settleRecenter(int generation) {
-        if (generation != recenterGeneration) {
+        if (!recenterState.takeSettle(generation)) {
             return;
         }
-        if (!recenterSettlePending) {
-            return;
-        }
-        recenterSettlePending = false;
         // 点名查车期间镜头属于目标车，不再按自身定位做落点校验，避免抢镜头。
-        if (vehicleFocusActive) {
-            recenterInProgress = false;
+        if (recenterState.isVehicleFocusActive()) {
+            recenterState.finishRecenter();
             updateMapCenterIndicator();
             return;
         }
         // 用户在动画期间自己拖动过地图时不要抢回镜头，只把状态收尾。
-        if (!recenterUserInterrupted && currentLocation != null) {
+        if (recenterState.shouldCorrectSettlePosition() && currentLocation != null) {
             GeoPoint target = currentLocationDisplayPoint();
             if (distanceBetween(mapCenterGcj02(), target)
                     > RECENTER_SETTLE_TOLERANCE_METERS) {
                 mapView.getController().stopAnimation(false);
                 mapView.getController().setCenter(target);
-                mapView.getController().setZoom(recenterZoom);
+                mapView.getController().setZoom(recenterState.recenterZoom());
             }
         }
-        recenterInProgress = false;
+        recenterState.finishRecenter();
         updateMapCenterIndicator();
     }
 
@@ -3063,7 +2957,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
             }
             return;
         }
-        if (recenterInProgress || suppressCenterIndicator) {
+        if (recenterState.shouldHideCenterIndicator(true)) {
             mapCenterIndicator.setVisibility(View.GONE);
             return;
         }
@@ -3155,12 +3049,10 @@ public final class MainActivity extends BaseActivity implements LocationListener
      *                  与点击地图标记时的原有行为一致。
      */
     private void showBikeDetail(Bike bike, boolean moveCamera, Double zoomLevel) {
-        hideVehicleList();
+        vehicleListPanelController.hide();
         selectedBike = bike;
         updateMarkerSelection();
-        bikePanel.setVisibility(View.VISIBLE);
-        updateFindVehicleButton();
-        bindBikeDetail(bike);
+        bikeDetailPanelController.show(bike);
 
         Marker marker = bikeMarkers.get(bike.number);
         if (marker != null) {
@@ -3171,53 +3063,11 @@ public final class MainActivity extends BaseActivity implements LocationListener
         }
     }
 
-    private void bindBikeDetail(Bike bike) {
-        tvBikeNumber.setText(getString(R.string.number_format, bike.number));
-        tvManualNotice.setVisibility(bike.locationKnown ? View.GONE : View.VISIBLE);
-
-        if (!bike.locationKnown) {
-            tvBikeMeta.setText(R.string.bike_meta_manual);
-        } else {
-            String detail = getString(bike.statusRes);
-            if (!bike.model.isEmpty()) {
-                detail += " · " + bike.model;
-            }
-            tvBikeMeta.setText(getString(
-                    R.string.bike_meta,
-                    formatBattery(bike.batteryPercent),
-                    formatDistance(bike.distanceMeters),
-                    detail
-            ));
-        }
-
-        if (!bike.locationKnown || bike.lastUploadAtMs <= 0L) {
-            tvBikeFreshness.setVisibility(View.GONE);
-        } else {
-            long ageMs = Math.max(0L, System.currentTimeMillis() - bike.lastUploadAtMs);
-            String uploadClock = ageMs < 24L * 60L * 60L * 1000L
-                    ? refreshTimeFormat.format(new Date(bike.lastUploadAtMs))
-                    : uploadTimeFormat.format(new Date(bike.lastUploadAtMs));
-            tvBikeFreshness.setText(getString(
-                    R.string.bike_last_upload,
-                    uploadClock,
-                    formatUploadAge(ageMs)
-            ));
-            tvBikeFreshness.setVisibility(View.VISIBLE);
-        }
-    }
-
     private void focusBikeOnMap(Bike bike, Double zoomLevel) {
         if (!bike.locationKnown) {
             return;
         }
-        // 点名看车：镜头主动离开自身定位点，进入“车定位优先”态。取消已排期
-        // 的居中落点校验并关闭 6 秒跟随窗口，否则自身定位回调会抢回镜头。
-        vehicleFocusActive = true;
-        recenterSettlePending = false;
-        recenterInProgress = false;
-        recenterFollowUntilMs = 0L;
-        recenterAwaitFixSinceElapsedMs = 0L;
-        suppressCenterIndicator = true;
+        recenterState.enterVehicleFocus();
         GeoPoint point = new GeoPoint(bike.latitude, bike.longitude);
         if (zoomLevel == null) {
             mapView.getController().animateTo(point);
@@ -3245,17 +3095,6 @@ public final class MainActivity extends BaseActivity implements LocationListener
         mapView.invalidate();
     }
 
-    private void updateFindVehicleButton() {
-        if (btnFindVehicle == null) {
-            return;
-        }
-        btnFindVehicle.setVisibility(
-                selectedBike != null && selectedBike.locationKnown
-                        ? View.VISIBLE
-                        : View.GONE
-        );
-    }
-
     private void showBikeList() {
         if (bikes.isEmpty()) {
             Toast.makeText(
@@ -3269,298 +3108,14 @@ public final class MainActivity extends BaseActivity implements LocationListener
         }
 
         hideBikePanel();
-        renderVehicleList();
-        vehicleListPanel.setVisibility(View.VISIBLE);
         int mode = normalizeVehicleListMode(appPreferences.getInt(
                 PREF_VEHICLE_LIST_MODE,
                 VEHICLE_LIST_MODE_MAP_CARDS
         ));
-        setVehicleListExpanded(mode == VEHICLE_LIST_MODE_HALF_LIST, false);
-    }
-
-    private void renderVehicleList() {
-        vehicleCardsRow.removeAllViews();
-        vehicleListRows.removeAllViews();
-        vehicleListCardScroll.scrollTo(0, 0);
-        for (Bike bike : bikes) {
-            vehicleCardsRow.addView(createBikeCard(bike));
-            vehicleListRows.addView(createBikeListRow(bike));
-        }
-        updateVehicleListHeader();
-    }
-
-    private void refreshVehicleListIfVisible() {
-        if (vehicleListPanel.getVisibility() != View.VISIBLE) {
-            return;
-        }
-        if (bikes.isEmpty()) {
-            hideVehicleList();
-            return;
-        }
-        renderVehicleList();
-    }
-
-    private View createBikeCard(Bike bike) {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(12), dp(6), dp(12), dp(6));
-        card.setBackgroundResource(
-                selectedBike != null && selectedBike.number.equals(bike.number)
-                        ? R.drawable.bg_vehicle_list_card_selected
-                        : R.drawable.bg_vehicle_list_card
+        vehicleListPanelController.show(
+                bikes,
+                mode == VEHICLE_LIST_MODE_HALF_LIST
         );
-
-        LinearLayout titleRow = new LinearLayout(this);
-        titleRow.setGravity(Gravity.CENTER_VERTICAL);
-        titleRow.setOrientation(LinearLayout.HORIZONTAL);
-        TextView number = textView("#" + bike.number, 18, R.color.text_primary, true);
-        number.setSingleLine(true);
-        number.setEllipsize(TextUtils.TruncateAt.END);
-        titleRow.addView(
-                number,
-                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1)
-        );
-        TextView action = textView(
-                getString(R.string.action_locate),
-                13,
-                R.color.control_accent_text,
-                true
-        );
-        action.setGravity(Gravity.CENTER);
-        action.setClickable(true);
-        action.setFocusable(true);
-        action.setContentDescription(getString(R.string.action_locate) + " " + bike.number);
-        TypedValue actionBackground = new TypedValue();
-        if (getTheme().resolveAttribute(
-                android.R.attr.selectableItemBackgroundBorderless,
-                actionBackground,
-                true
-        )) {
-            action.setBackground(getDrawable(actionBackground.resourceId));
-        }
-        action.setOnClickListener(view -> locateBikeOnMapFromCard(bike));
-        titleRow.addView(action, new LinearLayout.LayoutParams(
-                dp(48),
-                dp(48)
-        ));
-        card.addView(titleRow);
-
-        String site = siteDisplayName(bike);
-        if (!site.isEmpty()) {
-            TextView siteView = textView(site, 14, R.color.text_secondary, false);
-            siteView.setSingleLine(true);
-            siteView.setEllipsize(TextUtils.TruncateAt.END);
-            card.addView(siteView);
-        }
-
-        TextView meta = textView(
-                formatDistance(bike.distanceMeters)
-                        + " · " + formatBatteryLabel(bike)
-                        + " · " + getString(bike.statusRes),
-                12,
-                R.color.text_tertiary,
-                false
-        );
-        meta.setSingleLine(true);
-        meta.setEllipsize(TextUtils.TruncateAt.END);
-        card.addView(meta);
-
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                vehicleListCardWidth(),
-                ViewGroup.LayoutParams.MATCH_PARENT
-        );
-        card.setLayoutParams(params);
-        card.setOnClickListener(view -> selectBikeFromVehicleList(bike));
-        return card;
-    }
-
-    private int vehicleListCardWidth() {
-        int viewportWidth = vehicleListCardScroll.getWidth();
-        if (viewportWidth <= 0) {
-            viewportWidth = getResources().getDisplayMetrics().widthPixels - dp(56);
-        }
-        return Math.max(1, viewportWidth);
-    }
-
-    private void snapVehicleCardsToNearest() {
-        int viewportWidth = vehicleListCardScroll.getWidth();
-        if (viewportWidth <= 0 || vehicleCardsRow.getChildCount() == 0) {
-            return;
-        }
-        int page = Math.round(vehicleListCardScroll.getScrollX() / (float) viewportWidth);
-        page = Math.max(0, Math.min(vehicleCardsRow.getChildCount() - 1, page));
-        vehicleListCardScroll.smoothScrollTo(page * viewportWidth, 0);
-    }
-
-    private View createBikeListRow(Bike bike) {
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(dp(8), dp(9), dp(8), dp(9));
-        row.setBackgroundResource(R.drawable.bg_list_row);
-
-        ImageView icon = new ImageView(this);
-        icon.setImageResource(R.drawable.ic_bike_marker);
-        row.addView(icon, new LinearLayout.LayoutParams(dp(44), dp(44)));
-
-        LinearLayout labels = new LinearLayout(this);
-        labels.setOrientation(LinearLayout.VERTICAL);
-        labels.setPadding(dp(10), 0, dp(8), 0);
-        labels.addView(textView(
-                "#" + bike.number,
-                17,
-                R.color.text_primary,
-                true
-        ));
-
-        String site = siteDisplayName(bike);
-        if (!site.isEmpty()) {
-            labels.addView(textView(site, 13, R.color.text_secondary, false));
-        }
-        labels.addView(textView(
-                formatDistance(bike.distanceMeters)
-                        + " · " + formatBatteryLabel(bike)
-                        + " · " + getString(bike.statusRes),
-                11,
-                R.color.text_tertiary,
-                false
-        ));
-        row.addView(labels, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-
-        TextView action = textView(
-                getString(R.string.action_locate),
-                13,
-                R.color.control_accent_text,
-                true
-        );
-        action.setGravity(Gravity.CENTER);
-        row.addView(action, new LinearLayout.LayoutParams(dp(48), ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        row.setOnClickListener(view -> selectBikeFromVehicleList(bike));
-        return row;
-    }
-
-    private void selectBikeFromVehicleList(Bike bike) {
-        hideVehicleList();
-        showBikeDetail(bike, true);
-    }
-
-    private void locateBikeOnMapFromCard(Bike bike) {
-        focusBikeOnMap(bike, null);
-    }
-
-    private void setVehicleListExpanded(boolean expanded, boolean animate) {
-        if (vehicleListPanel == null
-                || vehicleListPanel.getVisibility() != View.VISIBLE) {
-            vehicleListExpanded = expanded;
-            return;
-        }
-        vehicleListExpanded = expanded;
-        vehicleListCardScroll.setVisibility(expanded ? View.GONE : View.VISIBLE);
-        vehicleListScroll.setVisibility(expanded ? View.VISIBLE : View.GONE);
-        updateVehicleListHeader();
-        animateVehicleListHeight(
-                expanded ? vehicleListExpandedHeight() : vehicleListCollapsedHeight(),
-                animate
-        );
-        updateMapControlsForVehicleList();
-    }
-
-    private void updateVehicleListHeader() {
-        if (tvVehicleListSubtitle == null || btnVehicleListExpand == null) {
-            return;
-        }
-        tvVehicleListSubtitle.setText(getString(
-                vehicleListExpanded
-                        ? R.string.list_subtitle
-                        : R.string.vehicle_list_subtitle_cards,
-                bikes.size()
-        ));
-        btnVehicleListExpand.setText(
-                vehicleListExpanded
-                        ? R.string.vehicle_list_collapse
-                        : R.string.vehicle_list_show_all
-        );
-    }
-
-    private void animateVehicleListHeight(int targetHeight, boolean animate) {
-        if (vehicleListAnimator != null) {
-            vehicleListAnimator.cancel();
-            vehicleListAnimator = null;
-        }
-        ViewGroup.LayoutParams params = vehicleListPanel.getLayoutParams();
-        int startHeight = vehicleListPanel.getHeight();
-        if (!animate || startHeight <= 0) {
-            params.height = targetHeight;
-            vehicleListPanel.setLayoutParams(params);
-            return;
-        }
-        ValueAnimator animator = ValueAnimator.ofInt(startHeight, targetHeight);
-        animator.setDuration(VEHICLE_LIST_ANIMATION_MS);
-        animator.addUpdateListener(animation -> {
-            params.height = (int) animation.getAnimatedValue();
-            vehicleListPanel.setLayoutParams(params);
-        });
-        vehicleListAnimator = animator;
-        animator.start();
-    }
-
-    private int vehicleListCollapsedHeight() {
-        return dp(200);
-    }
-
-    private int vehicleListExpandedHeight() {
-        int screenHeight = getResources().getDisplayMetrics().heightPixels;
-        return Math.max(
-                dp(280),
-                Math.min(dp(520), Math.round(screenHeight * 0.58f))
-        );
-    }
-
-    private void hideVehicleList() {
-        if (vehicleListAnimator != null) {
-            vehicleListAnimator.cancel();
-            vehicleListAnimator = null;
-        }
-        vehicleListExpanded = false;
-        if (vehicleListPanel != null) {
-            vehicleListPanel.setVisibility(View.GONE);
-        }
-        updateMapControlsForVehicleList();
-    }
-
-    private void updateMapControlsForVehicleList() {
-        View leftControls = findViewById(R.id.leftControls);
-        View listButton = findViewById(R.id.btnList);
-        View refreshButton = findViewById(R.id.btnRefresh);
-        if (leftControls == null || listButton == null || refreshButton == null) {
-            return;
-        }
-        boolean listVisible = vehicleListPanel != null
-                && vehicleListPanel.getVisibility() == View.VISIBLE;
-        if (!listVisible) {
-            leftControls.setVisibility(View.VISIBLE);
-            listButton.setVisibility(View.VISIBLE);
-            leftControls.setTranslationY(0f);
-            refreshButton.setVisibility(View.VISIBLE);
-            refreshButton.setTranslationY(0f);
-        } else if (vehicleListExpanded) {
-            leftControls.setVisibility(View.GONE);
-            leftControls.setTranslationY(0f);
-            refreshButton.setVisibility(View.GONE);
-            refreshButton.setTranslationY(0f);
-        } else {
-            leftControls.setVisibility(View.VISIBLE);
-            listButton.setVisibility(View.GONE);
-            int overlap = vehicleListCollapsedHeight()
-                    + dp(88)
-                    + systemBarsBottom
-                    - dp(276);
-            float shift = -Math.max(0, overlap + dp(12));
-            leftControls.setTranslationY(shift);
-            refreshButton.setVisibility(View.VISIBLE);
-            refreshButton.setTranslationY(shift - dp(10));
-        }
     }
 
     /**
@@ -3590,662 +3145,19 @@ public final class MainActivity extends BaseActivity implements LocationListener
         return textView;
     }
 
-    private void showNumberInput() {
-        showNumberInput("");
-    }
-
-    private void showNumberInput(String initialValue) {
-        View content = LayoutInflater.from(this).inflate(R.layout.dialog_number_input, null);
-        EditText input = content.findViewById(R.id.inputTail);
-        View previewPanel = content.findViewById(R.id.inputPreviewPanel);
-        TextView previewNumber = content.findViewById(R.id.tvInputPreviewNumber);
-        TextView previewSite = content.findViewById(R.id.tvInputPreviewSite);
-        TextView error = content.findViewById(R.id.tvInputError);
-        TextView numberSite = content.findViewById(R.id.tvNumberSite);
-        TextView numberSeries = content.findViewById(R.id.tvNumberSeries);
-        View numberRangeRow = content.findViewById(R.id.numberRangeRow);
-        LinearLayout historySection = content.findViewById(R.id.historySection);
-        LinearLayout historyContainer = content.findViewById(R.id.historyContainer);
-        TextView clearHistory = content.findViewById(R.id.tvClearHistory);
-        input.setFilters(new InputFilter[]{
-                new InputFilter.LengthFilter(VehicleNumberCatalog.NUMBER_LENGTH),
-                (source, start, end, destination, destinationStart, destinationEnd) -> {
-                    for (int index = start; index < end; index++) {
-                        if (!Character.isDigit(source.charAt(index))) {
-                            return "";
-                        }
-                    }
-                    return null;
-                }
-        });
-        if (initialValue != null && !initialValue.isEmpty()) {
-            input.setText(initialValue);
-            input.setSelection(input.length());
-        }
-
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setView(content)
-                .setPositiveButton(R.string.confirm, null)
-                .setNegativeButton(R.string.cancel, null)
-                .create();
-
-        int initialSiteId = preferredNumberSiteId();
-        String initialSeries = preferredNumberSeries(initialSiteId);
-        int[] selectedSiteId = {initialSiteId};
-        String[] selectedSeries = {initialSeries};
-        String[] resolvedNumber = {null};
-        List<List<VehicleNumberCatalog.NumberInfo>> candidateMatches = new ArrayList<>();
-        Runnable[] updateResolutionRef = new Runnable[1];
-
-        Runnable updateResolution = () -> {
-            String raw = input.getText().toString().trim();
-            if (vehicleNumberCatalogLoadFinished
-                    && vehicleNumberCatalog.site(selectedSiteId[0]) == null) {
-                selectedSiteId[0] = preferredNumberSiteId();
-                selectedSeries[0] = preferredNumberSeries(selectedSiteId[0]);
-            }
-            VehicleNumberCatalog.Site selectedSite = vehicleNumberCatalog.site(selectedSiteId[0]);
-            if (selectedSite != null) {
-                if (!selectedSite.series.contains(selectedSeries[0])) {
-                    selectedSeries[0] = preferredNumberSeries(selectedSiteId[0]);
-                }
-                numberSite.setText(selectedSite.name);
-                numberSeries.setText(getString(
-                        R.string.number_series_title_format,
-                        selectedSeries[0]
-                ));
-            }
-
-            resolvedNumber[0] = null;
-            candidateMatches.clear();
-            error.setVisibility(View.GONE);
-            previewPanel.setVisibility(View.GONE);
-            previewPanel.setClickable(false);
-            previewPanel.setOnClickListener(null);
-            previewSite.setVisibility(View.GONE);
-            if (raw.isEmpty()) {
-                setNumberConfirmEnabled(dialog, false);
-                return;
-            }
-            if (!vehicleNumberCatalogLoadFinished
-                    && raw.length() != VehicleNumberCatalog.NUMBER_LENGTH) {
-                numberSite.setText(R.string.number_catalog_loading);
-                numberSeries.setText("");
-                error.setText(R.string.number_catalog_loading);
-                error.setVisibility(View.VISIBLE);
-                setNumberConfirmEnabled(dialog, false);
-                return;
-            }
-
-            if (raw.length() == VehicleNumberCatalog.NUMBER_LENGTH) {
-                String normalized = VehicleNumberCatalog.normalize(raw);
-                VehicleNumberCatalog.NumberInfo info = vehicleNumberCatalog.find(normalized);
-                if (info == null) {
-                    numberSite.setText(R.string.input_number_direct_title);
-                    numberSeries.setText(R.string.input_number_direct_desc);
-                    resolvedNumber[0] = normalized;
-                    previewNumber.setText(getString(
-                            R.string.input_preview_number,
-                            normalized
-                    ));
-                    previewSite.setVisibility(View.GONE);
-                    previewPanel.setVisibility(View.VISIBLE);
-                    setNumberConfirmEnabled(dialog, true);
-                    return;
-                }
-                selectedSiteId[0] = info.siteId;
-                selectedSeries[0] = info.series;
-                resolvedNumber[0] = info.number;
-                numberSite.setText(info.siteName);
-                numberSeries.setText(getString(
-                        R.string.number_series_title_format,
-                        info.series
-                ));
-                previewNumber.setText(getString(
-                        R.string.input_preview_number,
-                        info.number
-                ));
-                previewSite.setVisibility(View.GONE);
-                previewPanel.setVisibility(View.VISIBLE);
-                setNumberConfirmEnabled(dialog, true);
-                return;
-            }
-
-            if (raw.length() == VehicleNumberCatalog.TAIL_LENGTH || raw.length() == 4) {
-                List<VehicleNumberCatalog.NumberInfo> seriesMatches =
-                        vehicleNumberCatalog.matchesSuffix(
-                                selectedSiteId[0],
-                                selectedSeries[0],
-                                raw
-                        );
-                List<VehicleNumberCatalog.NumberInfo> siteMatches =
-                        vehicleNumberCatalog.matchesSuffix(
-                                selectedSiteId[0],
-                                null,
-                                raw
-                        );
-                List<VehicleNumberCatalog.NumberInfo> matches = seriesMatches.isEmpty()
-                        ? siteMatches
-                        : seriesMatches;
-                if (matches.size() == 1) {
-                    VehicleNumberCatalog.NumberInfo info = matches.get(0);
-                    selectedSiteId[0] = info.siteId;
-                    selectedSeries[0] = info.series;
-                    resolvedNumber[0] = info.number;
-                    numberSite.setText(info.siteName);
-                    numberSeries.setText(getString(
-                            R.string.number_series_title_format,
-                            info.series
-                    ));
-                    previewNumber.setText(getString(
-                            R.string.input_preview_number,
-                            info.number
-                    ));
-                    previewSite.setVisibility(View.GONE);
-                    previewPanel.setVisibility(View.VISIBLE);
-                    setNumberConfirmEnabled(dialog, true);
-                    return;
-                }
-                if (matches.size() > 1) {
-                    candidateMatches.add(matches);
-                    previewNumber.setText(getString(
-                            R.string.input_number_candidates,
-                            matches.size()
-                    ));
-                    previewSite.setText(R.string.input_number_candidates_hint);
-                    previewSite.setVisibility(View.VISIBLE);
-                    previewPanel.setClickable(true);
-                    previewPanel.setFocusable(true);
-                    previewPanel.setOnClickListener(view -> showNumberCandidates(
-                            candidateMatches.get(0),
-                            selectedSiteId,
-                            selectedSeries,
-                            updateResolutionRef[0]
-                    ));
-                    previewPanel.setVisibility(View.VISIBLE);
-                    setNumberConfirmEnabled(dialog, false);
-                    return;
-                }
-
-                error.setText(R.string.input_number_not_found);
-                error.setVisibility(View.VISIBLE);
-                setNumberConfirmEnabled(dialog, false);
-                return;
-            }
-
-            error.setText(R.string.input_number_incomplete);
-            error.setVisibility(View.VISIBLE);
-            setNumberConfirmEnabled(dialog, false);
-        };
-        updateResolutionRef[0] = updateResolution;
-        numberCatalogRefresh = updateResolution;
-
-        numberRangeRow.setOnClickListener(view -> showNumberRangePicker(
-                selectedSiteId,
-                selectedSeries,
-                updateResolution
-        ));
-
-        historyContainer.setShowDividers(LinearLayout.SHOW_DIVIDER_MIDDLE);
-        historyContainer.setDividerDrawable(new ColorDrawable(getColor(R.color.divider)));
-        historyContainer.setDividerPadding(dp(6));
-
-        List<QrHistoryEntry> history = loadQrHistory();
-        if (!history.isEmpty()) {
-            historySection.setVisibility(View.VISIBLE);
-            clearHistory.setOnClickListener(view -> {
-                clearQrHistory();
-                historyContainer.removeAllViews();
-                historySection.setVisibility(View.GONE);
-                Toast.makeText(
-                        this,
-                        R.string.history_cleared,
-                        Toast.LENGTH_SHORT
-                ).show();
-            });
-            for (QrHistoryEntry entry : history) {
-                View row = createHistoryRow(entry);
-                row.setOnClickListener(view -> {
-                    dialog.dismiss();
-                    openQrHistoryEntry(entry);
-                });
-                historyContainer.addView(row);
-            }
-        }
-
-        input.addTextChangedListener(new TextWatcher() {
-            @Override
-            public void beforeTextChanged(CharSequence value, int start, int count, int after) {
-                // No-op.
-            }
-
-            @Override
-            public void onTextChanged(CharSequence value, int start, int before, int count) {
-                updateResolution.run();
-            }
-
-            @Override
-            public void afterTextChanged(Editable value) {
-                // No-op.
-            }
-        });
-
-        dialog.setOnShowListener(ignored -> {
-            Button confirm = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
-            confirm.setEnabled(false);
-            confirm.setOnClickListener(view -> {
-                updateResolution.run();
-                String number = resolvedNumber[0];
-                if (number == null) {
-                    return;
-                }
-                appPreferences.edit()
-                        .putInt(PREF_NUMBER_SITE_ID, selectedSiteId[0])
-                        .putString(PREF_NUMBER_SERIES, selectedSeries[0])
-                        .apply();
-                Bike bike = findOrCreateBike(number);
-                dialog.dismiss();
-                showBikeDetail(bike, true);
-                if (!bike.locationKnown) {
-                    queryBikeByNumber(number);
-                }
-            });
-            updateResolution.run();
-            input.requestFocus();
-        });
-        dialog.setOnDismissListener(ignored -> {
-            if (numberCatalogRefresh == updateResolution) {
-                numberCatalogRefresh = null;
-            }
-        });
-        dialog.show();
-    }
-
-    private void showNumberCandidates(
-            List<VehicleNumberCatalog.NumberInfo> candidates,
-            int[] selectedSiteId,
-            String[] selectedSeries,
-            Runnable onChanged
-    ) {
-        String[] labels = new String[candidates.size()];
-        for (int index = 0; index < candidates.size(); index++) {
-            VehicleNumberCatalog.NumberInfo candidate = candidates.get(index);
-            labels[index] = candidate.number + " · " + candidate.siteName;
-        }
-        new AlertDialog.Builder(this)
-                .setTitle(R.string.number_candidates_title)
-                .setItems(labels, (dialog, which) -> {
-                    VehicleNumberCatalog.NumberInfo info = candidates.get(which);
-                    selectedSiteId[0] = info.siteId;
-                    selectedSeries[0] = info.series;
-                    onChanged.run();
-                })
-                .setNegativeButton(R.string.cancel, null)
-                .show();
-    }
-
-    private void showNumberRangePicker(
-            int[] selectedSiteId,
-            String[] selectedSeries,
-            Runnable onChanged
-    ) {
-        List<VehicleNumberCatalog.Site> sites = vehicleNumberCatalog.sites();
-        String[] titles = new String[sites.size()];
-        String[] subtitles = new String[sites.size()];
-        for (int index = 0; index < sites.size(); index++) {
-            VehicleNumberCatalog.Site site = sites.get(index);
-            titles[index] = site.name;
-            subtitles[index] = getString(
-                    R.string.number_site_series_count,
-                    site.series.size()
-            );
-        }
-        showNumberOptions(
-                R.string.number_range_site_title,
-                titles,
-                subtitles,
-                which -> {
-                    VehicleNumberCatalog.Site site = sites.get(which);
-                    selectedSiteId[0] = site.id;
-                    if (!site.series.contains(selectedSeries[0])) {
-                        selectedSeries[0] = site.series.get(0);
-                    }
-                    if (site.series.size() == 1) {
-                        selectedSeries[0] = site.series.get(0);
-                        onChanged.run();
-                        return;
-                    }
-                    onChanged.run();
-                    showNumberSeriesPicker(site, selectedSeries, onChanged);
-                }
-        );
-    }
-
-    private void showNumberSeriesPicker(
-            VehicleNumberCatalog.Site site,
-            String[] selectedSeries,
-            Runnable onChanged
-    ) {
-        String[] titles = new String[site.series.size()];
-        String[] subtitles = new String[site.series.size()];
-        for (int index = 0; index < site.series.size(); index++) {
-            String series = site.series.get(index);
-            titles[index] = getString(
-                    R.string.number_series_title_format,
-                    series
-            );
-            subtitles[index] = getString(
-                    R.string.number_series_subtitle_format,
-                    series
-            );
-        }
-        showNumberOptions(
-                R.string.number_range_series_title,
-                titles,
-                subtitles,
-                which -> {
-                    selectedSeries[0] = site.series.get(which);
-                    onChanged.run();
-                }
-        );
-    }
-
-    private interface NumberOptionListener {
-        void onSelected(int index);
-    }
-
-    private void showNumberOptions(
-            int titleRes,
-            String[] titles,
-            String[] subtitles,
-            NumberOptionListener listener
-    ) {
-        View content = LayoutInflater.from(this).inflate(
-                R.layout.dialog_number_options,
-                null
-        );
-        LinearLayout container = content.findViewById(R.id.numberOptionsContainer);
-        LayoutInflater inflater = LayoutInflater.from(this);
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(titleRes)
-                .setView(content)
-                .setNegativeButton(R.string.cancel, null)
-                .create();
-        for (int index = 0; index < titles.length; index++) {
-            View row = inflater.inflate(R.layout.item_number_option, container, false);
-            TextView title = row.findViewById(R.id.tvNumberOptionTitle);
-            TextView subtitle = row.findViewById(R.id.tvNumberOptionSubtitle);
-            title.setText(titles[index]);
-            if (subtitles[index] == null || subtitles[index].isEmpty()) {
-                subtitle.setVisibility(View.GONE);
-            } else {
-                subtitle.setText(subtitles[index]);
-                subtitle.setVisibility(View.VISIBLE);
-            }
-            int selectedIndex = index;
-            row.setOnClickListener(view -> {
-                dialog.dismiss();
-                listener.onSelected(selectedIndex);
-            });
-            container.addView(row);
-        }
-        dialog.show();
-    }
-
-    private int preferredNumberSiteId() {
-        if (selectedBike != null) {
-            VehicleNumberCatalog.NumberInfo info = vehicleNumberCatalog.find(selectedBike.number);
-            if (info != null) {
-                return info.siteId;
-            }
-        }
-        int stored = appPreferences.getInt(PREF_NUMBER_SITE_ID, -1);
-        if (vehicleNumberCatalog.site(stored) != null) {
-            return stored;
-        }
-        List<VehicleNumberCatalog.Site> sites = vehicleNumberCatalog.sites();
-        // 目录不可用时没有任何可选站点，返回 -1 交由调用方走空目录降级路径，避免越界。
-        return sites.isEmpty() ? -1 : sites.get(0).id;
-    }
-
-    private String preferredNumberSeries(int siteId) {
-        VehicleNumberCatalog.Site site = vehicleNumberCatalog.site(siteId);
-        if (site == null || site.series.isEmpty()) {
-            return "";
-        }
-        String stored = appPreferences.getString(PREF_NUMBER_SERIES, "");
-        if (stored != null && site.series.contains(stored)) {
-            return stored;
-        }
-        return site.series.get(0);
-    }
-
-    private void setNumberConfirmEnabled(AlertDialog dialog, boolean enabled) {
-        if (dialog.isShowing()) {
-            Button confirm = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
-            if (confirm != null) {
-                confirm.setEnabled(enabled);
-            }
-        }
-    }
-
-    private View createHistoryRow(QrHistoryEntry entry) {
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(dp(10), dp(5), dp(10), dp(5));
-        row.setBackgroundResource(R.drawable.bg_list_row);
-        row.setMinimumHeight(dp(38));
-
-        LinearLayout labels = new LinearLayout(this);
-        labels.setOrientation(LinearLayout.VERTICAL);
-        labels.setGravity(Gravity.CENTER_VERTICAL);
-
-        TextView numberView = textView(
-                entry.displayNumber(),
-                15,
-                R.color.text_primary,
-                true
-        );
-        numberView.setSingleLine(true);
-        labels.addView(numberView, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-        ));
-        String siteName = entry.siteName;
-        if (siteName.isEmpty()) {
-            VehicleNumberCatalog.NumberInfo info = vehicleNumberCatalog.find(entry.number);
-            siteName = info == null || info.siteName == null ? "" : info.siteName;
-        }
-        siteName = BikeRepository.correctSiteName(siteName);
-        if (!siteName.isEmpty()) {
-            TextView siteView = textView(
-                    siteName,
-                    12,
-                    R.color.text_secondary,
-                    false
-            );
-            siteView.setMaxLines(2);
-            labels.addView(siteView, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-            ));
-        }
-        row.addView(labels, new LinearLayout.LayoutParams(
-                0,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                1
-        ));
-
-        TextView action = textView(
-                getString(entry.number.isEmpty()
-                        ? R.string.history_action_complete
-                        : R.string.history_action),
-                12,
-                R.color.control_accent_text,
-                true
-        );
-        action.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-        action.setSingleLine(true);
-        action.setMinWidth(dp(76));
-        action.setPadding(dp(8), 0, 0, 0);
-        row.addView(action, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-        ));
-        return row;
-    }
-
-    private List<QrHistoryEntry> loadQrHistory() {
-        if (!appPreferences
-                .getBoolean(PREF_KEEP_QR_HISTORY, true)) {
-            return new ArrayList<>();
-        }
-        String raw = appPreferences
-                .getString(PREF_QR_HISTORY, "");
-        List<QrHistoryEntry> history = new ArrayList<>();
-        if (raw == null || raw.isEmpty()) {
-            return history;
-        }
-        for (String value : raw.split(",")) {
-            String stored = value.trim();
-            String storedSite = "";
-            int separator = stored.indexOf('|');
-            if (separator >= 0) {
-                storedSite = stored.substring(separator + 1).trim();
-                stored = stored.substring(0, separator).trim();
-            }
-            if (stored.isEmpty()) {
-                continue;
-            }
-            String number = "";
-            String tail = "";
-            VehicleNumberCatalog.NumberInfo info = null;
-            if (stored.matches("\\d{1,4}")) {
-                tail = stored;
-                if (tail.length() >= VehicleNumberCatalog.TAIL_LENGTH) {
-                    info = resolveUniqueHistoryTail(storedSite, tail);
-                }
-                if (info != null) {
-                    number = info.number;
-                    storedSite = info.siteName == null ? storedSite : info.siteName;
-                }
-            } else {
-                number = VehicleNumberCatalog.normalize(stored);
-                if (!number.matches("\\d{9}")) {
-                    continue;
-                }
-                info = vehicleNumberCatalog.find(number);
-            }
-            if (storedSite.isEmpty()
-                    && info != null
-                    && info.siteName != null) {
-                storedSite = info.siteName;
-            }
-            storedSite = BikeRepository.correctSiteName(storedSite);
-            QrHistoryEntry entry = new QrHistoryEntry(number, tail, storedSite);
-            if (containsHistoryEntry(history, entry)) {
-                continue;
-            }
-            history.add(entry);
-            if (history.size() >= QR_HISTORY_LIMIT) {
-                break;
-            }
-        }
-        saveQrHistory(history);
-        return history;
-    }
-
     private void rememberQrHistory(String number, String siteName) {
-        if (!appPreferences
-                .getBoolean(PREF_KEEP_QR_HISTORY, true)) {
+        if (!qrHistoryStore.retentionEnabled()) {
             clearQrHistory();
             return;
         }
-        String normalized = VehicleNumberCatalog.normalize(number);
-        String resolvedSite = siteName == null ? "" : siteName.trim();
-        if (resolvedSite.isEmpty()) {
-            VehicleNumberCatalog.NumberInfo info = vehicleNumberCatalog.find(normalized);
-            resolvedSite = info == null || info.siteName == null ? "" : info.siteName;
-        }
-        resolvedSite = BikeRepository.correctSiteName(resolvedSite);
-        List<QrHistoryEntry> history = loadQrHistory();
-        for (int index = history.size() - 1; index >= 0; index--) {
-            if (history.get(index).number.equals(normalized)) {
-                history.remove(index);
-            }
-        }
-        history.add(0, new QrHistoryEntry(normalized, "", resolvedSite));
-        while (history.size() > QR_HISTORY_LIMIT) {
-            history.remove(history.size() - 1);
-        }
-        saveQrHistory(history);
-    }
-
-    private void saveQrHistory(List<QrHistoryEntry> history) {
-        if (!appPreferences
-                .getBoolean(PREF_KEEP_QR_HISTORY, true)) {
-            clearQrHistory();
-            return;
-        }
-        StringBuilder raw = new StringBuilder();
-        for (int index = 0; index < history.size(); index++) {
-            if (index > 0) {
-                raw.append(',');
-            }
-            QrHistoryEntry entry = history.get(index);
-            raw.append(entry.persistenceValue());
-            if (!entry.siteName.isEmpty()) {
-                raw.append('|').append(entry.siteName);
-            }
-        }
-        appPreferences
-                .edit()
-                .putString(PREF_QR_HISTORY, raw.toString())
-                .apply();
-    }
-
-    private static boolean containsHistoryEntry(
-            List<QrHistoryEntry> history,
-            QrHistoryEntry candidate
-    ) {
-        for (QrHistoryEntry entry : history) {
-            if (entry.persistenceValue().equals(candidate.persistenceValue())) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private VehicleNumberCatalog.NumberInfo resolveUniqueHistoryTail(
-            String siteName,
-            String tail
-    ) {
-        VehicleNumberCatalog.NumberInfo unique = null;
-        String expectedSite = BikeRepository.correctSiteName(siteName);
-        for (VehicleNumberCatalog.Site site : vehicleNumberCatalog.sites()) {
-            for (VehicleNumberCatalog.NumberInfo candidate
-                    : vehicleNumberCatalog.matchesSuffix(site.id, null, tail)) {
-                if (!expectedSite.isEmpty()
-                        && !expectedSite.equals(BikeRepository.correctSiteName(
-                        candidate.siteName
-                ))) {
-                    continue;
-                }
-                if (unique != null && !unique.number.equals(candidate.number)) {
-                    return null;
-                }
-                unique = candidate;
-            }
-        }
-        return unique;
+        qrHistoryStore.remember(number, siteName, vehicleNumberCatalog);
     }
 
     private void clearQrHistory() {
-        appPreferences
-                .edit()
-                .remove(PREF_QR_HISTORY)
-                .apply();
+        qrHistoryStore.clear();
+        if (finderSnapshotStore != null) {
+            finderSnapshotStore.clear();
+        }
         // “清除痕迹”同时清掉本地自学习的编号→校园提示，避免残留用户痕迹。
         LearnedVehicleNumberStore.get(this).clear();
     }
@@ -4321,7 +3233,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
                         // 本地自学习：只有“按编号点名查到车”这一条路径才写入，
                         // 记录编号对应的校园名，供以后补全显示；内置目录优先，
                         // 学习项只补未知编号。与“保留最近车辆编号”联动，关闭时不记录。
-                        if (appPreferences.getBoolean(PREF_KEEP_QR_HISTORY, true)) {
+                        if (qrHistoryStore.retentionEnabled()) {
                             String learnedSite = historySiteNameFor(bike);
                             if (!learnedSite.isEmpty()) {
                                 LearnedVehicleNumberStore.get(MainActivity.this)
@@ -4377,29 +3289,47 @@ public final class MainActivity extends BaseActivity implements LocationListener
                 : BikeRepository.correctSiteName(info.siteName);
     }
 
-    /** One "recently generated" entry: the vehicle number plus its site name. */
-    private static final class QrHistoryEntry {
-        final String number;
-        final String tail;
-        final String siteName;
+    private void captureFinderSnapshot(Bike bike) {
+        captureFinderSnapshot(bike, true);
+    }
 
-        QrHistoryEntry(String number, String siteName) {
-            this(number, "", siteName);
+    private long captureFinderSnapshot(Bike bike, boolean resolveBluetooth) {
+        if (finderSnapshotStore == null
+                || finderSnapshotCapture == null
+                || bike == null
+                || !bike.number.matches("\\d{9}")) {
+            return 0L;
+        }
+        if (!qrHistoryStore.retentionEnabled()) {
+            finderSnapshotStore.clear();
+            return 0L;
         }
 
-        QrHistoryEntry(String number, String tail, String siteName) {
-            this.number = number;
-            this.tail = tail;
-            this.siteName = siteName == null ? "" : siteName;
+        GeoPoint queryPoint = currentLocation == null
+                ? null
+                : currentLocationDisplayPoint();
+        if (queryPoint == null && bike.locationKnown) {
+            queryPoint = new GeoPoint(bike.latitude, bike.longitude);
         }
+        return finderSnapshotCapture.capture(
+                bike,
+                historySiteNameFor(bike),
+                queryPoint == null ? Double.NaN : queryPoint.getLatitude(),
+                queryPoint == null ? Double.NaN : queryPoint.getLongitude(),
+                resolveBluetooth,
+                System.currentTimeMillis()
+        );
+    }
 
-        String displayNumber() {
-            return number.isEmpty() ? tail : number;
+    private void openFinderSnapshot(FinderSnapshotStore.Snapshot snapshot) {
+        if (snapshot == null || !snapshot.hasLocation()) {
+            return;
         }
-
-        String persistenceValue() {
-            return number.isEmpty() ? tail : number;
-        }
+        startActivity(VehicleFinderActivity.createSnapshotIntent(
+                this,
+                snapshot,
+                currentLocation
+        ));
     }
 
     private void showQrDialog(Bike bike) {
@@ -4438,7 +3368,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
         imageView.setOnClickListener(view -> saveQrToGallery(qrBitmap, bike.number));
         copyButton.setOnClickListener(view -> copyToClipboard(bike.qrUrl()));
         wechatButton.setOnClickListener(
-                view -> saveQrAndOpenWeChat(qrBitmap, bike.number)
+                view -> saveQrAndOpenWeChat(qrBitmap, bike)
         );
         dialog.show();
         Window window = dialog.getWindow();
@@ -4474,7 +3404,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
         }
     }
 
-    private void openQrHistoryEntry(QrHistoryEntry entry) {
+    private void openQrHistoryEntry(QrHistoryStore.Entry entry) {
         if (entry.number.matches("\\d{9}")) {
             openQrInWeChat(entry.number);
         } else if (entry.tail.length() < VehicleNumberCatalog.TAIL_LENGTH) {
@@ -4483,9 +3413,9 @@ public final class MainActivity extends BaseActivity implements LocationListener
                     R.string.history_tail_incomplete_hint,
                     Toast.LENGTH_LONG
             ).show();
-            showNumberInput("");
+            vehicleNumberInputController.show("");
         } else if (!entry.tail.isEmpty()) {
-            showNumberInput(entry.tail);
+            vehicleNumberInputController.show(entry.tail);
         }
     }
 
@@ -4496,12 +3426,13 @@ public final class MainActivity extends BaseActivity implements LocationListener
             return;
         }
         rememberQrHistory(number, historySiteNameFor(bike));
-        saveQrAndOpenWeChat(qrBitmap, number);
+        saveQrAndOpenWeChat(qrBitmap, bike);
     }
 
-    private void saveQrAndOpenWeChat(Bitmap bitmap, String number) {
+    private void saveQrAndOpenWeChat(Bitmap bitmap, Bike bike) {
+        captureFinderSnapshot(bike);
         pendingOpenWeChatAfterQrSave = true;
-        saveQrToGallery(bitmap, number);
+        saveQrToGallery(bitmap, bike.number);
     }
 
     private void saveQrToGallery(Bitmap bitmap, String number) {
@@ -4639,34 +3570,6 @@ public final class MainActivity extends BaseActivity implements LocationListener
         return "--".equals(value) ? value : value + "%";
     }
 
-    private String formatUploadAge(long ageMs) {
-        long minutes = Math.max(0L, ageMs) / 60_000L;
-        if (minutes < 1L) {
-            return getString(R.string.bike_upload_just_now);
-        }
-        if (minutes < 60L) {
-            return getString(R.string.bike_upload_minutes_ago, minutes);
-        }
-        long hours = minutes / 60L;
-        if (hours < 24L) {
-            return getString(R.string.bike_upload_hours_ago, hours);
-        }
-        return getString(R.string.bike_upload_days_ago, hours / 24L);
-    }
-
-    private int dp(int value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
-    }
-
-    private boolean hasPermission(String permission) {
-        return checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED;
-    }
-
-    private boolean hasLocationPermission() {
-        return hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
-                || hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION);
-    }
-
     private void startLocationUpdates() {
         DiagnosticLog.event("Loc", "start updates");
         // Re-registering is idempotent: drop any previous registration first so
@@ -4767,81 +3670,32 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     /**
-     * 判断刚到达的定位是否比最近一次“重新定位”点击更新。
-     *
-     * <p>后台挂起较久再回到前台时，系统给到的往往是挂起前缓存的旧点，而真正的新
-     * 定位要等 GPS 重新捕获，可能超过固定的跟随窗口。这里用定位自带的
-     * elapsedRealtimeNanos 比较新旧：只有比这次点击更新的定位才算落地，否则一直
-     * 保留等待状态（最长 {@link #RECENTER_FRESH_FIX_TIMEOUT_MS}）。</p>
-     *
-     * @return true 表示本次回调就是等待中的新定位
-     */
-    private boolean resolveRecenterFreshFix(Location location) {
-        if (recenterAwaitFixSinceElapsedMs == 0L) {
-            return false;
-        }
-        long fixElapsedMs = location.getElapsedRealtimeNanos() / 1_000_000L;
-        boolean updated = fixElapsedMs > 0L
-                ? fixElapsedMs >= recenterAwaitFixSinceElapsedMs
-                // 个别机型不填 elapsedRealtimeNanos：退化为按到达时间判断，
-                // 至少等到请求后 2 秒，避免注册监听时立刻回吐的缓存点被当成新定位。
-                : SystemClock.elapsedRealtime() - recenterAwaitFixSinceElapsedMs >= 2000L;
-        if (updated) {
-            recenterAwaitFixSinceElapsedMs = 0L;
-            return true;
-        }
-        if (SystemClock.elapsedRealtime() - recenterAwaitFixSinceElapsedMs
-                > RECENTER_FRESH_FIX_TIMEOUT_MS) {
-            // 长时间等不到新定位就放弃等待，避免一直跟随。
-            recenterAwaitFixSinceElapsedMs = 0L;
-        }
-        return false;
-    }
-
-    /**
      * 保留更好的实时定位，避免 network 的旧缓存点覆盖刚到达的 GPS 点。
      */
     private boolean shouldAcceptLocation(Location candidate) {
         if (currentLocation == null) {
             return true;
         }
-
-        long candidateElapsed = candidate.getElapsedRealtimeNanos();
-        long currentElapsed = currentLocation.getElapsedRealtimeNanos();
-        long toleranceNanos = LOCATION_TIMESTAMP_TOLERANCE_MS * 1_000_000L;
-        if (candidateElapsed > 0L
-                && currentElapsed > 0L
-                && candidateElapsed + toleranceNanos < currentElapsed) {
+        if (LocationAcceptancePolicy.isOlder(
+                candidate.getElapsedRealtimeNanos(),
+                currentLocation.getElapsedRealtimeNanos(),
+                candidate.getTime(),
+                currentLocation.getTime(),
+                LOCATION_TIMESTAMP_TOLERANCE_MS
+        )) {
             return false;
         }
-
-        // 个别提供者不填 elapsedRealtimeNanos，退回使用定位自身的时间戳。
-        if ((candidateElapsed <= 0L || currentElapsed <= 0L)
-                && candidate.getTime() > 0L
-                && currentLocation.getTime() > 0L
-                && candidate.getTime() + LOCATION_TIMESTAMP_TOLERANCE_MS
-                        < currentLocation.getTime()) {
-            return false;
-        }
-
         boolean significantlyNewer = isSignificantlyNewer(candidate);
-        if (LocationManager.NETWORK_PROVIDER.equals(candidate.getProvider())
-                && LocationManager.GPS_PROVIDER.equals(currentLocation.getProvider())) {
-            if (isFresh(currentLocation, LOCATION_GPS_FRESH_WINDOW_MS)
-                    || !significantlyNewer) {
-                return false;
-            }
-        }
-
-        if (candidate.hasAccuracy()
-                && currentLocation.hasAccuracy()
-                && candidate.getAccuracy()
-                        > currentLocation.getAccuracy() + LOCATION_ACCURACY_MARGIN_METERS
-                && !significantlyNewer) {
-            return false;
-        }
-
-        return true;
+        return LocationAcceptancePolicy.shouldAccept(
+                LocationManager.NETWORK_PROVIDER.equals(candidate.getProvider()),
+                LocationManager.GPS_PROVIDER.equals(currentLocation.getProvider()),
+                isFresh(currentLocation, LOCATION_GPS_FRESH_WINDOW_MS),
+                candidate.hasAccuracy(),
+                candidate.hasAccuracy() ? candidate.getAccuracy() : 0f,
+                currentLocation.hasAccuracy(),
+                currentLocation.hasAccuracy() ? currentLocation.getAccuracy() : 0f,
+                significantlyNewer
+        );
     }
 
     private boolean isFresh(Location location, long windowMs) {
@@ -4855,18 +3709,13 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     private boolean isSignificantlyNewer(Location candidate) {
-        long candidateElapsed = candidate.getElapsedRealtimeNanos();
-        long currentElapsed = currentLocation.getElapsedRealtimeNanos();
-        if (candidateElapsed > 0L && currentElapsed > 0L) {
-            return candidateElapsed > currentElapsed
-                    && candidateElapsed - currentElapsed
-                            > LOCATION_SIGNIFICANTLY_NEWER_MS * 1_000_000L;
-        }
-        return candidate.getTime() > 0L
-                && currentLocation.getTime() > 0L
-                && candidate.getTime() > currentLocation.getTime()
-                && candidate.getTime() - currentLocation.getTime()
-                        > LOCATION_SIGNIFICANTLY_NEWER_MS;
+        return LocationAcceptancePolicy.isSignificantlyNewer(
+                candidate.getElapsedRealtimeNanos(),
+                currentLocation.getElapsedRealtimeNanos(),
+                candidate.getTime(),
+                currentLocation.getTime(),
+                LOCATION_SIGNIFICANTLY_NEWER_MS
+        );
     }
 
     @Override
@@ -4906,36 +3755,37 @@ public final class MainActivity extends BaseActivity implements LocationListener
         updateMapCenterIndicator();
         mapView.invalidate();
 
-        // 用户点过“重新定位”后，只有比这次点击更新的定位才算真正落地。
-        boolean freshFixForRecenter = resolveRecenterFreshFix(location);
-
-        if (!initialLocationCentered || pendingRecenterOnFix) {
-            boolean firstFix = !initialLocationCentered && !pendingRecenterOnFix;
-            initialLocationCentered = true;
-            DiagnosticLog.event("Loc", firstFix ? "recenter first" : "recenter pending");
-            if (firstFix) {
-                // 首次定位沿用原有缩放级别，只把地图移到定位点；
-                // 但仍复用落点校验，避免动画没跑完就误显示定位指示针。
+        long nowElapsedMs = SystemClock.elapsedRealtime();
+        boolean freshFixForRecenter = recenterState.resolveFreshFix(
+                location.getElapsedRealtimeNanos() / 1_000_000L,
+                nowElapsedMs
+        );
+        boolean distanceBeyondThreshold = distanceBetween(
+                mapCenterGcj02(),
+                displayPoint
+        ) > CENTER_INDICATOR_DISTANCE_METERS;
+        MapRecenterState.LocationAction action = recenterState.onAcceptedLocation(
+                freshFixForRecenter,
+                distanceBeyondThreshold,
+                nowElapsedMs
+        );
+        switch (action) {
+            case FIRST_FIX:
+                DiagnosticLog.event("Loc", "recenter first");
+                // 首次定位沿用原有缩放级别，但仍复用落点校验。
                 recenterToCurrentLocation(mapView.getZoomLevelDouble(), true);
-            } else {
-                // 用户在首个定位到达前就按了“重新定位”：等定位一到就按定位
-                // 按钮的逻辑居中，回到自身定位点并恢复常用缩放级别。
+                break;
+            case PENDING_RECENTER:
+                DiagnosticLog.event("Loc", "recenter pending");
                 recenterToCurrentLocation();
-            }
-        } else if (!vehicleFocusActive
-                && !recenterUserInterrupted
-                && (freshFixForRecenter
-                        || recenterAwaitFixSinceElapsedMs != 0L
-                        || SystemClock.elapsedRealtime() < recenterFollowUntilMs)
-                && distanceBetween(mapCenterGcj02(), displayPoint)
-                        > CENTER_INDICATOR_DISTANCE_METERS) {
-            DiagnosticLog.event("Loc", "recenter follow");
-            // 刚居中时的定位可能是系统缓存的旧点，新定位稍后到达。此时地图
-            // 仍停在旧点上（既没回到自身定位中心，又会显示指示针），窗口内
-            // 跟随新定位修正一次；用户自己操作过地图就不再抢回镜头。后台挂起
-            // 较久时新定位可能超过固定窗口才到，recenterAwaitFixSinceElapsedMs
-            // 会让等待一直持续到新定位到达（最多 RECENTER_FRESH_FIX_TIMEOUT_MS）。
-            recenterToCurrentLocation(recenterZoom, false);
+                break;
+            case FOLLOW:
+                DiagnosticLog.event("Loc", "recenter follow");
+                recenterToCurrentLocation(recenterState.recenterZoom(), false);
+                break;
+            case NONE:
+            default:
+                break;
         }
     }
 
@@ -4952,12 +3802,26 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     private double distanceBetween(GeoPoint first, GeoPoint second) {
-        float[] result = new float[1];
-        Location.distanceBetween(
+        return distanceBetween(
                 first.getLatitude(),
                 first.getLongitude(),
                 second.getLatitude(),
-                second.getLongitude(),
+                second.getLongitude()
+        );
+    }
+
+    private double distanceBetween(
+            double firstLatitude,
+            double firstLongitude,
+            double secondLatitude,
+            double secondLongitude
+    ) {
+        float[] result = new float[1];
+        Location.distanceBetween(
+                firstLatitude,
+                firstLongitude,
+                secondLatitude,
+                secondLongitude,
                 result
         );
         return result[0];
@@ -5151,12 +4015,15 @@ public final class MainActivity extends BaseActivity implements LocationListener
         // 回前台后，如果暂停前镜头本来就在自身定位上，就等一个比本次恢复更新的
         // 定位再把镜头带回自身位置。否则用户期间移动后，地图会停在旧位置、
         // 蓝点却已经移到别处，看起来“视角和定位对不上”。
-        if (currentLocation != null
-                && !vehicleFocusActive
-                && distanceBetween(mapCenterGcj02(), currentLocationDisplayPoint())
-                        <= CENTER_INDICATOR_DISTANCE_METERS) {
-            recenterAwaitFixSinceElapsedMs = SystemClock.elapsedRealtime();
-        }
+        recenterState.onResume(
+                currentLocation != null,
+                currentLocation != null
+                        && distanceBetween(
+                                mapCenterGcj02(),
+                                currentLocationDisplayPoint()
+                        ) <= CENTER_INDICATOR_DISTANCE_METERS,
+                SystemClock.elapsedRealtime()
+        );
         // Foreground-only location: re-register on every resume, otherwise the
         // position stays frozen after the app returns from the background.
         if (hasLocationPermission()) {
@@ -5210,10 +4077,8 @@ public final class MainActivity extends BaseActivity implements LocationListener
     @Override
     protected void onDestroy() {
         uiHandler.removeCallbacks(refreshFromMapCenterRunnable);
-        if (vehicleListAnimator != null) {
-            vehicleListAnimator.cancel();
-            vehicleListAnimator = null;
-        }
+        vehicleListPanelController.release();
+        vehicleNumberInputController.release();
         cancelReminderDialogTimer();
         stopLocationUpdates();
         if (repository != null) {

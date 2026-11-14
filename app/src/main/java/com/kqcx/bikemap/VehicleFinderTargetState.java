@@ -3,7 +3,8 @@ package com.kqcx.bikemap;
 final class VehicleFinderTargetState {
     enum Source {
         ESTIMATED,
-        REFRESHED
+        REFRESHED,
+        SNAPSHOT
     }
 
     private final String number;
@@ -11,19 +12,22 @@ final class VehicleFinderTargetState {
     private double longitude;
     private long lastUploadAtMs;
     private Source source;
+    private String bluetoothName;
 
     private VehicleFinderTargetState(
             String number,
             double latitude,
             double longitude,
             long lastUploadAtMs,
-            Source source
+            Source source,
+            String bluetoothName
     ) {
         this.number = number;
         this.latitude = latitude;
         this.longitude = longitude;
         this.lastUploadAtMs = lastUploadAtMs;
         this.source = source;
+        this.bluetoothName = bluetoothName == null ? "" : bluetoothName;
     }
 
     static VehicleFinderTargetState createEstimated(
@@ -32,9 +36,19 @@ final class VehicleFinderTargetState {
             double longitude,
             long lastUploadAtMs
     ) {
+        return createEstimated(number, latitude, longitude, lastUploadAtMs, "");
+    }
+
+    static VehicleFinderTargetState createEstimated(
+            String number,
+            double latitude,
+            double longitude,
+            long lastUploadAtMs,
+            String bluetoothName
+    ) {
         if (number == null
                 || number.trim().isEmpty()
-                || !isValidCoordinate(latitude, longitude)) {
+                || !CoordinateUtils.isValidLatLng(latitude, longitude)) {
             return null;
         }
         return new VehicleFinderTargetState(
@@ -42,7 +56,8 @@ final class VehicleFinderTargetState {
                 latitude,
                 longitude,
                 lastUploadAtMs,
-                Source.ESTIMATED
+                Source.ESTIMATED,
+                bluetoothName
         );
     }
 
@@ -51,7 +66,8 @@ final class VehicleFinderTargetState {
             double latitude,
             double longitude,
             long lastUploadAtMs,
-            Source source
+            Source source,
+            String bluetoothName
     ) {
         if (source == null) {
             return null;
@@ -60,7 +76,8 @@ final class VehicleFinderTargetState {
                 number,
                 latitude,
                 longitude,
-                lastUploadAtMs
+                lastUploadAtMs,
+                bluetoothName
         );
         if (restored != null) {
             restored.source = source;
@@ -69,11 +86,19 @@ final class VehicleFinderTargetState {
     }
 
     boolean applyRefresh(Bike bike) {
-        if (bike == null
-                || !number.equals(bike.number)
-                || !bike.locationKnown
-                || !isValidCoordinate(bike.latitude, bike.longitude)
-                || isOlderUpload(bike.lastUploadAtMs)) {
+        if (bike == null || !number.equals(bike.number)) {
+            return false;
+        }
+        if (!bike.bluetoothName.isEmpty()) {
+            bluetoothName = bike.bluetoothName;
+        }
+        if (!bike.locationKnown
+                || !CoordinateUtils.isValidLatLng(bike.latitude, bike.longitude)
+                || !VehicleLocationFreshness.canReplace(
+                        lastUploadAtMs,
+                        true,
+                        bike.lastUploadAtMs
+                )) {
             return false;
         }
         latitude = bike.latitude;
@@ -103,6 +128,10 @@ final class VehicleFinderTargetState {
         return source;
     }
 
+    String bluetoothName() {
+        return bluetoothName;
+    }
+
     boolean needsRefresh(long nowMs, long maxAgeMs) {
         if (lastUploadAtMs <= 0L) {
             return true;
@@ -111,19 +140,4 @@ final class VehicleFinderTargetState {
         return ageMs > maxAgeMs;
     }
 
-    private static boolean isValidCoordinate(double latitude, double longitude) {
-        return !Double.isNaN(latitude)
-                && !Double.isNaN(longitude)
-                && latitude >= -90d
-                && latitude <= 90d
-                && longitude >= -180d
-                && longitude <= 180d
-                && (latitude != 0d || longitude != 0d);
-    }
-
-    private boolean isOlderUpload(long candidateLastUploadAtMs) {
-        return lastUploadAtMs > 0L
-                && candidateLastUploadAtMs > 0L
-                && candidateLastUploadAtMs < lastUploadAtMs;
-    }
 }

@@ -3,11 +3,6 @@ package com.kqcx.bikemap;
 import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.PackageManager;
-import android.hardware.Sensor;
-import android.hardware.SensorEvent;
-import android.hardware.SensorEventListener;
-import android.hardware.SensorManager;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
@@ -20,14 +15,12 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.view.View;
-import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -35,6 +28,7 @@ import androidx.core.view.WindowInsetsCompat;
 import org.osmdroid.util.GeoPoint;
 
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.Locale;
 import java.util.TimeZone;
@@ -43,11 +37,15 @@ import java.util.TimeZone;
  * Coarse vehicle finder based on the last reported vehicle coordinate.
  */
 public final class VehicleFinderActivity extends BaseActivity
-        implements LocationListener, SensorEventListener {
+        implements LocationListener, VehicleFinderBleController.Host {
     private static final String EXTRA_NUMBER = "finder_number";
     private static final String EXTRA_LATITUDE = "finder_latitude";
     private static final String EXTRA_LONGITUDE = "finder_longitude";
     private static final String EXTRA_LAST_UPLOAD = "finder_last_upload";
+    private static final String EXTRA_BLUETOOTH_NAME = "finder_bluetooth_name";
+    private static final String EXTRA_SOURCE = "finder_source";
+    private static final String EXTRA_SNAPSHOT_CAPTURE_TIME =
+            "finder_snapshot_capture_time";
     private static final String EXTRA_CURRENT_LATITUDE = "finder_current_latitude";
     private static final String EXTRA_CURRENT_LONGITUDE = "finder_current_longitude";
     private static final String EXTRA_CURRENT_ACCURACY = "finder_current_accuracy";
@@ -59,8 +57,12 @@ public final class VehicleFinderActivity extends BaseActivity
     private static final String STATE_TARGET_LONGITUDE = "finder_target_longitude";
     private static final String STATE_TARGET_LAST_UPLOAD = "finder_target_last_upload";
     private static final String STATE_TARGET_SOURCE = "finder_target_source";
+    private static final String STATE_TARGET_BLUETOOTH_NAME = "finder_target_bluetooth_name";
+    private static final String STATE_BLE_PERMISSION_REQUESTED =
+            "finder_ble_permission_requested";
 
     private static final int REQUEST_LOCATION = 5101;
+    private static final int REQUEST_BLE_PERMISSIONS = 5102;
     private static final int ACTION_NONE = 0;
     private static final int ACTION_PERMISSION = 1;
     private static final int ACTION_LOCATION_SETTINGS = 2;
@@ -83,17 +85,11 @@ public final class VehicleFinderActivity extends BaseActivity
             handler.postDelayed(this, UI_REFRESH_MS);
         }
     };
-    private final float[] rotationMatrix = new float[9];
-    private final float[] orientation = new float[3];
-    private final float[] gravity = new float[3];
-    private final float[] geomagnetic = new float[3];
-
     private LocationManager locationManager;
-    private SensorManager sensorManager;
     private BikeRepository repository;
-    private Sensor rotationSensor;
-    private Sensor accelerometer;
-    private Sensor magnetometer;
+    private VehicleFinderBleController bleController;
+    private VehicleHeadingTracker headingTracker;
+    private FinderSnapshotStore finderSnapshotStore;
     private Location currentLocation;
     private Location latestObservedLocation;
     private Location pendingRefreshLocation;
@@ -102,39 +98,95 @@ public final class VehicleFinderActivity extends BaseActivity
     private TextView tvFreshness;
     private TextView tvSource;
     private TextView tvHint;
+    private TextView tvBleStatus;
     private ImageView imgArrow;
+    private Button btnBleAction;
     private Button btnAction;
     private ImageButton btnFinderRefresh;
     private VehicleFinderRadarView radarView;
     private VehicleFinderTargetState target;
-    private float headingDegrees;
-    private boolean hasHeading;
+    private float heldBearingDegrees;
+    private float heldBearingDistanceMeters;
+    private boolean hasHeldBearing;
     private boolean trackingLocation;
-    private boolean hasGravity;
-    private boolean hasGeomagnetic;
-    private boolean directionSensorAvailable;
     private boolean gpsProviderUnavailable;
     private boolean networkProviderUnavailable;
     private boolean reacquiringLocation;
     private boolean refreshingTarget;
+    private boolean lastTargetRefreshMissed;
     private boolean entryRefreshEvaluated;
     private boolean locationPermissionRequested;
+    private boolean blePermissionRequested;
     private int accuracyQuality = VehicleFinderMath.ACCURACY_UNKNOWN;
-    private int headingSensorAccuracy = SensorManager.SENSOR_STATUS_ACCURACY_HIGH;
     private int currentAction = ACTION_NONE;
     private long lastVisualUpdateMs;
     private long locationReacquireStartedElapsedMs;
     private long locationReacquireStartedElapsedNanos;
     private long locationReacquireStartedWallMs;
-    private int lastLoggedAccuracyQuality = VehicleFinderMath.ACCURACY_UNKNOWN;
+    private long snapshotCapturedAtMs;
+    private String lastLocationDiagnostic;
     private String lastDirectionDiagnostic;
 
     public static Intent createIntent(Context context, Bike bike, Location currentLocation) {
+        return createIntent(context, bike, currentLocation, 0L);
+    }
+
+    static Intent createIntent(
+            Context context,
+            Bike bike,
+            Location currentLocation,
+            long snapshotCapturedAtMs
+    ) {
+        return createIntent(
+                context,
+                bike.number,
+                bike.latitude,
+                bike.longitude,
+                bike.lastUploadAtMs,
+                bike.bluetoothName,
+                VehicleFinderTargetState.Source.ESTIMATED,
+                currentLocation,
+                snapshotCapturedAtMs
+        );
+    }
+
+    public static Intent createSnapshotIntent(
+            Context context,
+            FinderSnapshotStore.Snapshot snapshot,
+            Location currentLocation
+    ) {
+        return createIntent(
+                context,
+                snapshot.number,
+                snapshot.latitude,
+                snapshot.longitude,
+                snapshot.lastUploadAtMs,
+                snapshot.bluetoothName,
+                VehicleFinderTargetState.Source.SNAPSHOT,
+                currentLocation,
+                snapshot.capturedAtMs
+        );
+    }
+
+    private static Intent createIntent(
+            Context context,
+            String number,
+            double latitude,
+            double longitude,
+            long lastUploadAtMs,
+            String bluetoothName,
+            VehicleFinderTargetState.Source source,
+            Location currentLocation,
+            long snapshotCapturedAtMs
+    ) {
         Intent intent = new Intent(context, VehicleFinderActivity.class)
-                .putExtra(EXTRA_NUMBER, bike.number)
-                .putExtra(EXTRA_LATITUDE, bike.latitude)
-                .putExtra(EXTRA_LONGITUDE, bike.longitude)
-                .putExtra(EXTRA_LAST_UPLOAD, bike.lastUploadAtMs);
+                .putExtra(EXTRA_NUMBER, number)
+                .putExtra(EXTRA_LATITUDE, latitude)
+                .putExtra(EXTRA_LONGITUDE, longitude)
+                .putExtra(EXTRA_LAST_UPLOAD, lastUploadAtMs)
+                .putExtra(EXTRA_BLUETOOTH_NAME, bluetoothName)
+                .putExtra(EXTRA_SOURCE, source.name())
+                .putExtra(EXTRA_SNAPSHOT_CAPTURE_TIME, snapshotCapturedAtMs);
         if (currentLocation != null) {
             intent.putExtra(EXTRA_CURRENT_LATITUDE, currentLocation.getLatitude())
                     .putExtra(EXTRA_CURRENT_LONGITUDE, currentLocation.getLongitude())
@@ -153,6 +205,10 @@ public final class VehicleFinderActivity extends BaseActivity
                     STATE_LOCATION_PERMISSION_REQUESTED,
                     false
             );
+            blePermissionRequested = savedInstanceState.getBoolean(
+                    STATE_BLE_PERMISSION_REQUESTED,
+                    false
+            );
         }
         if (!readTarget()) {
             Toast.makeText(this, R.string.finder_target_invalid, Toast.LENGTH_SHORT).show();
@@ -164,9 +220,10 @@ public final class VehicleFinderActivity extends BaseActivity
         setContentView(R.layout.activity_vehicle_finder);
         bindViews();
         locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
-        sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
+        headingTracker = new VehicleHeadingTracker(this, this::onHeadingChanged);
         repository = new BikeRepository(this);
-        setupSensors();
+        finderSnapshotStore = new FinderSnapshotStore(this);
+        bleController = new VehicleFinderBleController(this, this);
         applyInitialLocation();
         ((TextView) findViewById(R.id.tvFinderVehicleNumber)).setText(getString(
                 R.string.finder_vehicle_title,
@@ -175,20 +232,38 @@ public final class VehicleFinderActivity extends BaseActivity
         findViewById(R.id.btnFinderBack).setOnClickListener(view -> finish());
         btnFinderRefresh.setOnClickListener(view -> refreshPositions());
         btnAction.setOnClickListener(view -> handleAction());
+        btnBleAction.setOnClickListener(view -> handleBleAction());
         applySystemBarInsets();
         updateTargetSource();
         updateRefreshButtonState();
+        updateBlePanel();
         updateFreshness();
         updateVisualsNow();
     }
 
     private boolean readTarget() {
         Intent intent = getIntent();
-        target = VehicleFinderTargetState.createEstimated(
+        snapshotCapturedAtMs = intent.getLongExtra(
+                EXTRA_SNAPSHOT_CAPTURE_TIME,
+                0L
+        );
+        VehicleFinderTargetState.Source source =
+                VehicleFinderTargetState.Source.ESTIMATED;
+        String sourceName = intent.getStringExtra(EXTRA_SOURCE);
+        if (sourceName != null) {
+            try {
+                source = VehicleFinderTargetState.Source.valueOf(sourceName);
+            } catch (IllegalArgumentException ignored) {
+                source = VehicleFinderTargetState.Source.ESTIMATED;
+            }
+        }
+        target = VehicleFinderTargetState.restore(
                 intent.getStringExtra(EXTRA_NUMBER),
                 intent.getDoubleExtra(EXTRA_LATITUDE, Double.NaN),
                 intent.getDoubleExtra(EXTRA_LONGITUDE, Double.NaN),
-                intent.getLongExtra(EXTRA_LAST_UPLOAD, 0L)
+                intent.getLongExtra(EXTRA_LAST_UPLOAD, 0L),
+                source,
+                intent.getStringExtra(EXTRA_BLUETOOTH_NAME)
         );
         return target != null;
     }
@@ -199,23 +274,12 @@ public final class VehicleFinderActivity extends BaseActivity
         tvFreshness = findViewById(R.id.tvFinderFreshness);
         tvSource = findViewById(R.id.tvFinderSource);
         tvHint = findViewById(R.id.tvFinderHint);
+        tvBleStatus = findViewById(R.id.tvFinderBleStatus);
         imgArrow = findViewById(R.id.imgFinderArrow);
+        btnBleAction = findViewById(R.id.btnFinderBleAction);
         btnAction = findViewById(R.id.btnFinderAction);
         btnFinderRefresh = findViewById(R.id.btnFinderRefresh);
         radarView = findViewById(R.id.vehicleFinderRadar);
-    }
-
-    private void setupSensors() {
-        if (sensorManager == null) {
-            return;
-        }
-        rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
-        if (rotationSensor == null) {
-            accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-            magnetometer = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD);
-        }
-        directionSensorAvailable = rotationSensor != null
-                || (accelerometer != null && magnetometer != null);
     }
 
     private void applyInitialLocation() {
@@ -259,12 +323,254 @@ public final class VehicleFinderActivity extends BaseActivity
         }
     }
 
+    private void handleBleAction() {
+        if (target == null || VehicleBleMath.isTwoSeries(target.number())) {
+            return;
+        }
+        if (!VehicleBleMath.supportsDirectMatch(
+                target.number(),
+                target.bluetoothName()
+        )) {
+            if (target.bluetoothName().isEmpty()) {
+                refreshPositions();
+            }
+            return;
+        }
+        if (!hasBlePermissions()) {
+            if (shouldOpenSettingsForBle()) {
+                startActivity(new Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:" + getPackageName())
+                ));
+            } else {
+                blePermissionRequested = true;
+                requestPermissions(
+                        requiredBlePermissions().toArray(new String[0]),
+                        REQUEST_BLE_PERMISSIONS
+                );
+            }
+            return;
+        }
+        if (bleController == null || !bleController.hasAdapter()) {
+            updateBlePanel();
+            return;
+        }
+        if (!isLocationEnabled()) {
+            startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS));
+            return;
+        }
+        if (!bleController.isEnabled()) {
+            startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS));
+            return;
+        }
+        if (bleController.isScanning()) {
+            stopBleScan(false);
+        } else {
+            startBleScan();
+        }
+    }
+
+    private void startBleScan() {
+        if (bleController != null) {
+            bleController.start();
+        }
+    }
+
+    private void stopBleScan(boolean timedOut) {
+        if (bleController != null) {
+            bleController.stop(timedOut, true);
+        }
+    }
+
+    private boolean hasBlePermissions() {
+        if (!hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+                || !hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION)) {
+            return false;
+        }
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.S
+                || (hasPermission(Manifest.permission.BLUETOOTH_SCAN)
+                && hasPermission(Manifest.permission.BLUETOOTH_CONNECT));
+    }
+
+    private ArrayList<String> requiredBlePermissions() {
+        ArrayList<String> permissions = new ArrayList<>();
+        permissions.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            permissions.add(Manifest.permission.BLUETOOTH_SCAN);
+            permissions.add(Manifest.permission.BLUETOOTH_CONNECT);
+        }
+        return permissions;
+    }
+
+    private boolean shouldOpenSettingsForBle() {
+        if (!blePermissionRequested) {
+            return false;
+        }
+        for (String permission : requiredBlePermissions()) {
+            if (!hasPermission(permission)
+                    && !shouldShowRequestPermissionRationale(permission)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void updateBlePanel() {
+        if (tvBleStatus == null || btnBleAction == null || target == null) {
+            return;
+        }
+        if (VehicleBleMath.isTwoSeries(target.number())) {
+            showBleState(
+                    R.string.finder_ble_unsupported_two_series,
+                    View.GONE,
+                    R.string.finder_ble_start
+            );
+            return;
+        }
+        if (!VehicleBleMath.supportsDirectMatch(
+                target.number(),
+                target.bluetoothName()
+        )) {
+            if (target.bluetoothName().isEmpty()) {
+                boolean refreshing = refreshingTarget;
+                showBleState(
+                        refreshing
+                                ? R.string.finder_ble_identity_refreshing
+                                : R.string.finder_ble_identity_unavailable,
+                        refreshing ? View.GONE : View.VISIBLE,
+                        R.string.finder_ble_refresh_identity
+                );
+            } else {
+                showBleState(
+                        R.string.finder_ble_unsupported_identity,
+                        View.GONE,
+                        R.string.finder_ble_start
+                );
+            }
+            return;
+        }
+        if (bleController == null || !bleController.hasAdapter()) {
+            showBleState(
+                    R.string.finder_ble_unsupported_device,
+                    View.GONE,
+                    R.string.finder_ble_start
+            );
+            return;
+        }
+        if (!hasBlePermissions()) {
+            showBleState(
+                    R.string.finder_ble_permission_required,
+                    View.VISIBLE,
+                    shouldOpenSettingsForBle()
+                            ? R.string.finder_ble_open_app_settings
+                            : R.string.finder_ble_allow_permission
+            );
+            return;
+        }
+        if (!isLocationEnabled()) {
+            showBleState(
+                    R.string.finder_ble_location_off,
+                    View.VISIBLE,
+                    R.string.finder_open_location_settings
+            );
+            return;
+        }
+        if (!bleController.isEnabled()) {
+            showBleState(
+                    R.string.finder_ble_bluetooth_off,
+                    View.VISIBLE,
+                    R.string.finder_ble_open_bluetooth_settings
+            );
+            return;
+        }
+        switch (bleController.status()) {
+            case SCANNING:
+                showBleState(
+                        R.string.finder_ble_scanning,
+                        View.VISIBLE,
+                        R.string.finder_ble_stop
+                );
+                return;
+            case FOUND:
+                showBleState(
+                        bleBandStatusRes(),
+                        View.VISIBLE,
+                        R.string.finder_ble_stop
+                );
+                return;
+            case WEAK:
+                showBleState(
+                        R.string.finder_ble_weak,
+                        View.VISIBLE,
+                        R.string.finder_ble_stop
+                );
+                return;
+            case LOST:
+                showBleState(
+                        R.string.finder_ble_lost,
+                        View.VISIBLE,
+                        R.string.finder_ble_stop
+                );
+                return;
+            case FAILED:
+                showBleState(
+                        R.string.finder_ble_failed,
+                        View.VISIBLE,
+                        R.string.finder_ble_retry
+                );
+                return;
+            case TIMED_OUT:
+                showBleState(
+                        R.string.finder_ble_timeout,
+                        View.VISIBLE,
+                        R.string.finder_ble_retry
+                );
+                return;
+            case STOPPED:
+                showBleState(
+                        R.string.finder_ble_stopped,
+                        View.VISIBLE,
+                        R.string.finder_ble_start
+                );
+                return;
+            case READY:
+            default:
+                showBleState(
+                        R.string.finder_ble_ready,
+                        View.VISIBLE,
+                        R.string.finder_ble_start
+                );
+        }
+    }
+
+    private void showBleState(int statusRes, int actionVisibility, int actionRes) {
+        tvBleStatus.setText(statusRes);
+        btnBleAction.setVisibility(actionVisibility);
+        if (actionVisibility == View.VISIBLE) {
+            btnBleAction.setText(actionRes);
+        }
+    }
+
+    private int bleBandStatusRes() {
+        if (bleController.band() == VehicleBleMath.BAND_VERY_NEAR) {
+            return R.string.finder_ble_found_very_near;
+        }
+        if (bleController.band() == VehicleBleMath.BAND_NEAR) {
+            return R.string.finder_ble_found_near;
+        }
+        return R.string.finder_ble_found_far;
+    }
+
     private void refreshPositions() {
         if (refreshingTarget
                 || reacquiringLocation
                 || repository == null
                 || !target.number().matches("\\d{9}")) {
             return;
+        }
+        if (bleController.isScanning()) {
+            stopBleScan(false);
         }
         GeoPoint queryPoint = currentLocation == null
                 ? new GeoPoint(target.latitude(), target.longitude())
@@ -273,11 +579,14 @@ public final class VehicleFinderActivity extends BaseActivity
                         currentLocation.getLongitude()
                 );
         refreshingTarget = true;
+        lastTargetRefreshMissed = false;
+        updateBlePanel();
         if (hasLocationPermission() && isLocationEnabled()) {
             beginLocationReacquire();
         }
         updateRefreshButtonState();
         tvFreshness.setText(R.string.finder_refreshing_vehicle);
+        logTargetRefresh("request");
         repository.queryOneCar(
                 target.number(),
                 queryPoint.getLatitude(),
@@ -288,10 +597,11 @@ public final class VehicleFinderActivity extends BaseActivity
                         if (isFinishing() || isDestroyed()) {
                             return;
                         }
-                        finishTargetRefresh();
-                        if (bike == null
-                                || !bike.locationKnown
-                                || !target.applyRefresh(bike)) {
+                        if (bike == null || !bike.locationKnown) {
+                            lastTargetRefreshMissed = true;
+                            finishTargetRefresh();
+                            logTargetRefresh("miss");
+                            updateBlePanel();
                             Toast.makeText(
                                     VehicleFinderActivity.this,
                                     R.string.finder_refresh_miss,
@@ -299,6 +609,24 @@ public final class VehicleFinderActivity extends BaseActivity
                             ).show();
                             return;
                         }
+                        boolean applied = target.applyRefresh(bike);
+                        updateFinderSnapshot(bike);
+                        updateBlePanel();
+                        if (!applied) {
+                            lastTargetRefreshMissed = true;
+                            finishTargetRefresh();
+                            logTargetRefresh("unchanged");
+                            Toast.makeText(
+                                    VehicleFinderActivity.this,
+                                    R.string.finder_refresh_miss,
+                                    Toast.LENGTH_SHORT
+                            ).show();
+                            return;
+                        }
+                        lastTargetRefreshMissed = false;
+                        hasHeldBearing = false;
+                        finishTargetRefresh();
+                        logTargetRefresh("hit");
                         updateTargetSource();
                         updateFreshness();
                         updateVisualsNow();
@@ -309,15 +637,34 @@ public final class VehicleFinderActivity extends BaseActivity
                         if (isFinishing() || isDestroyed()) {
                             return;
                         }
+                        lastTargetRefreshMissed = true;
                         finishTargetRefresh();
+                        logTargetRefresh("error");
+                        updateBlePanel();
                         Toast.makeText(
                                 VehicleFinderActivity.this,
                                 message,
                                 Toast.LENGTH_LONG
                         ).show();
                     }
+
+                    @Override
+                    public void onUnavailable(int errorCode, String message) {
+                        if (isFinishing() || isDestroyed()) {
+                            return;
+                        }
+                        lastTargetRefreshMissed = true;
+                        finishTargetRefresh();
+                        logTargetRefresh("unavailable");
+                        updateBlePanel();
+                        updateVisualsNow();
+                    }
                 }
         );
+    }
+
+    private void logTargetRefresh(String result) {
+        DiagnosticLog.detail("FinderLoc", "targetRefresh=" + result);
     }
 
     private void beginLocationReacquire() {
@@ -385,9 +732,30 @@ public final class VehicleFinderActivity extends BaseActivity
     }
 
     private boolean shouldAutoRefreshTarget() {
-        return target != null && target.needsRefresh(
+        if (target == null) {
+            return false;
+        }
+        if (target.source() == VehicleFinderTargetState.Source.SNAPSHOT) {
+            return false;
+        }
+        boolean identityMissing = !VehicleBleMath.isTwoSeries(target.number())
+                && target.bluetoothName().isEmpty();
+        return identityMissing || target.needsRefresh(
                 System.currentTimeMillis(),
                 TARGET_AUTO_REFRESH_AGE_MS
+        );
+    }
+
+    private void updateFinderSnapshot(Bike bike) {
+        if (finderSnapshotStore == null
+                || snapshotCapturedAtMs <= 0L
+                || bike == null) {
+            return;
+        }
+        finderSnapshotStore.updateFromBike(
+                target.number(),
+                snapshotCapturedAtMs,
+                bike
         );
     }
 
@@ -415,7 +783,11 @@ public final class VehicleFinderActivity extends BaseActivity
                 savedState.getDouble(STATE_TARGET_LATITUDE, target.latitude()),
                 savedState.getDouble(STATE_TARGET_LONGITUDE, target.longitude()),
                 savedState.getLong(STATE_TARGET_LAST_UPLOAD, target.lastUploadAtMs()),
-                source
+                source,
+                savedState.getString(
+                        STATE_TARGET_BLUETOOTH_NAME,
+                        target.bluetoothName()
+                )
         );
         if (restored != null) {
             target = restored;
@@ -426,11 +798,15 @@ public final class VehicleFinderActivity extends BaseActivity
         if (tvSource == null || target == null) {
             return;
         }
-        tvSource.setText(
-                target.source() == VehicleFinderTargetState.Source.REFRESHED
-                        ? R.string.finder_source_refreshed
-                        : R.string.finder_source_estimated
-        );
+        int sourceRes;
+        if (target.source() == VehicleFinderTargetState.Source.REFRESHED) {
+            sourceRes = R.string.finder_source_refreshed;
+        } else if (target.source() == VehicleFinderTargetState.Source.SNAPSHOT) {
+            sourceRes = R.string.finder_source_snapshot;
+        } else {
+            sourceRes = R.string.finder_source_estimated;
+        }
+        tvSource.setText(sourceRes);
     }
 
     private void startLocationTracking() {
@@ -446,7 +822,7 @@ public final class VehicleFinderActivity extends BaseActivity
             return;
         }
         if (!isLocationEnabled()) {
-            tvHint.setText(R.string.finder_location_off_hint);
+            setHint(getString(R.string.finder_location_off_hint));
             showAction(
                     ACTION_LOCATION_SETTINGS,
                     R.string.finder_open_location_settings
@@ -489,7 +865,7 @@ public final class VehicleFinderActivity extends BaseActivity
         if (!registered) {
             currentAction = ACTION_NONE;
             btnAction.setVisibility(View.GONE);
-            tvHint.setText(R.string.finder_location_start_failed);
+            setHint(getString(R.string.finder_location_start_failed));
         }
         scheduleVisualUpdate();
     }
@@ -502,7 +878,7 @@ public final class VehicleFinderActivity extends BaseActivity
                 && !shouldShowRequestPermissionRationale(
                 Manifest.permission.ACCESS_COARSE_LOCATION
         );
-        tvHint.setText(R.string.finder_permission_hint);
+        setHint(getString(R.string.finder_permission_hint));
         showAction(
                 openSettings ? ACTION_APP_SETTINGS : ACTION_PERMISSION,
                 openSettings
@@ -554,23 +930,29 @@ public final class VehicleFinderActivity extends BaseActivity
 
     private void useLocation(Location location) {
         if (!isFresh(location)) {
+            logLocationDecision("stale", location);
             return;
         }
         if (reacquiringLocation && !isLocationFromCurrentReacquire(location)) {
+            logLocationDecision("reacquire-filtered", location);
             return;
         }
         if (latestObservedLocation != null
                 && isOlderLocation(location, latestObservedLocation)) {
+            logLocationDecision("out-of-order", location);
             return;
         }
         latestObservedLocation = new Location(location);
         if (reacquiringLocation) {
             handleReacquiredLocation(location);
+            logLocationDecision("reacquire", location);
             return;
         }
-        if (currentLocation == null || shouldAcceptLocation(location)) {
+        boolean accepted = currentLocation == null || shouldAcceptLocation(location);
+        if (accepted) {
             currentLocation = new Location(location);
         }
+        logLocationDecision(accepted ? "accepted" : "rejected", location);
         scheduleVisualUpdate();
     }
 
@@ -599,37 +981,29 @@ public final class VehicleFinderActivity extends BaseActivity
             return false;
         }
         boolean significantlyNewer = isSignificantlyNewer(candidate);
-        if (LocationManager.NETWORK_PROVIDER.equals(candidate.getProvider())
-                && LocationManager.GPS_PROVIDER.equals(currentLocation.getProvider())
-                && (isFresh(currentLocation, LOCATION_GPS_FRESH_WINDOW_MS)
-                || !significantlyNewer)) {
-            return false;
-        }
-        if (candidate.hasAccuracy()
-                && currentLocation.hasAccuracy()
-                && candidate.getAccuracy()
-                > currentLocation.getAccuracy() + 50f
-                && !significantlyNewer) {
-            return false;
-        }
-        return true;
+        return LocationAcceptancePolicy.shouldAccept(
+                LocationManager.NETWORK_PROVIDER.equals(candidate.getProvider()),
+                LocationManager.GPS_PROVIDER.equals(currentLocation.getProvider()),
+                isFresh(currentLocation, LOCATION_GPS_FRESH_WINDOW_MS),
+                candidate.hasAccuracy(),
+                candidate.hasAccuracy() ? candidate.getAccuracy() : 0f,
+                currentLocation.hasAccuracy(),
+                currentLocation.hasAccuracy() ? currentLocation.getAccuracy() : 0f,
+                significantlyNewer
+        );
     }
 
     private boolean isOlderLocation(Location candidate, Location current) {
         if (current == null) {
             return false;
         }
-        long candidateElapsed = candidate.getElapsedRealtimeNanos();
-        long currentElapsed = current.getElapsedRealtimeNanos();
-        long toleranceNanos = LOCATION_TIMESTAMP_TOLERANCE_MS * 1_000_000L;
-        if (candidateElapsed > 0L && currentElapsed > 0L) {
-            return candidateElapsed + toleranceNanos < currentElapsed;
-        }
-        long candidateWallMs = candidate.getTime();
-        long currentWallMs = current.getTime();
-        return candidateWallMs > 0L
-                && currentWallMs > 0L
-                && candidateWallMs + LOCATION_TIMESTAMP_TOLERANCE_MS < currentWallMs;
+        return LocationAcceptancePolicy.isOlder(
+                candidate.getElapsedRealtimeNanos(),
+                current.getElapsedRealtimeNanos(),
+                candidate.getTime(),
+                current.getTime(),
+                LOCATION_TIMESTAMP_TOLERANCE_MS
+        );
     }
 
     private boolean isLocationFromCurrentReacquire(Location candidate) {
@@ -654,9 +1028,13 @@ public final class VehicleFinderActivity extends BaseActivity
     }
 
     private boolean isSignificantlyNewer(Location candidate) {
-        return locationTimeNanos(candidate)
-                - locationTimeNanos(currentLocation)
-                > LOCATION_SIGNIFICANTLY_NEWER_MS * 1_000_000L;
+        return LocationAcceptancePolicy.isSignificantlyNewer(
+                candidate.getElapsedRealtimeNanos(),
+                currentLocation.getElapsedRealtimeNanos(),
+                candidate.getTime(),
+                currentLocation.getTime(),
+                LOCATION_SIGNIFICANTLY_NEWER_MS
+        );
     }
 
     private long locationTimeNanos(Location location) {
@@ -702,7 +1080,7 @@ public final class VehicleFinderActivity extends BaseActivity
         markProviderAvailability(provider, false);
         if (!isLocationEnabled()) {
             stopLocationTracking();
-            tvHint.setText(R.string.finder_location_off_hint);
+            setHint(getString(R.string.finder_location_off_hint));
             showAction(
                     ACTION_LOCATION_SETTINGS,
                     R.string.finder_open_location_settings
@@ -746,6 +1124,86 @@ public final class VehicleFinderActivity extends BaseActivity
         return true;
     }
 
+    private void logLocationDecision(String decision, Location location) {
+        if (!DiagnosticLog.isDetailEnabled()) {
+            return;
+        }
+        long ageMs = VehicleFinderMath.locationAgeMs(
+                location.getElapsedRealtimeNanos(),
+                SystemClock.elapsedRealtimeNanos(),
+                location.getTime(),
+                System.currentTimeMillis()
+        );
+        float accuracyMeters = location.hasAccuracy() ? location.getAccuracy() : 0f;
+        long currentAgeMs = currentLocation == null
+                ? Long.MAX_VALUE
+                : VehicleFinderMath.locationAgeMs(
+                currentLocation.getElapsedRealtimeNanos(),
+                SystemClock.elapsedRealtimeNanos(),
+                currentLocation.getTime(),
+                System.currentTimeMillis()
+        );
+        float currentAccuracyMeters = currentLocation != null
+                && currentLocation.hasAccuracy()
+                ? currentLocation.getAccuracy()
+                : 0f;
+        String signature = decision
+                + "|" + location.getProvider()
+                + "|" + locationAgeDiagnosticBucket(ageMs)
+                + "|" + accuracyDiagnosticBucket(accuracyMeters)
+                + "|" + locationAgeDiagnosticBucket(currentAgeMs)
+                + "|" + accuracyDiagnosticBucket(currentAccuracyMeters);
+        if (signature.equals(lastLocationDiagnostic)) {
+            return;
+        }
+        lastLocationDiagnostic = signature;
+        DiagnosticLog.detail(
+                "FinderFix",
+                "decision=" + decision
+                        + " provider=" + location.getProvider()
+                        + " age=" + locationAgeDiagnosticBucket(ageMs)
+                        + " accuracy=" + accuracyDiagnosticBucket(accuracyMeters)
+                        + " currentAge=" + locationAgeDiagnosticBucket(currentAgeMs)
+                        + " currentAccuracy="
+                        + accuracyDiagnosticBucket(currentAccuracyMeters)
+        );
+    }
+
+    private static String locationAgeDiagnosticBucket(long ageMs) {
+        if (ageMs < 0L) {
+            return "future";
+        }
+        if (ageMs <= VehicleFinderMath.DIRECTION_MAX_AGE_MS) {
+            return "<=5s";
+        }
+        if (ageMs <= VehicleFinderMath.DIRECTION_HOLD_MAX_AGE_MS) {
+            return "6-8s";
+        }
+        if (ageMs <= LOCATION_MAX_AGE_MS) {
+            return "9-120s";
+        }
+        return ">120s";
+    }
+
+    private static String accuracyDiagnosticBucket(float accuracyMeters) {
+        if (accuracyMeters <= 0f) {
+            return "unknown";
+        }
+        if (accuracyMeters <= 5f) {
+            return "<=5m";
+        }
+        if (accuracyMeters <= 10f) {
+            return "6-10m";
+        }
+        if (accuracyMeters <= 25f) {
+            return "11-25m";
+        }
+        if (accuracyMeters <= 45f) {
+            return "26-45m";
+        }
+        return ">45m";
+    }
+
     private void scheduleVisualUpdate() {
         handler.removeCallbacks(visualUpdate);
         handler.postDelayed(visualUpdate, 60L);
@@ -753,6 +1211,7 @@ public final class VehicleFinderActivity extends BaseActivity
 
     private void updateVisualsNow() {
         handler.removeCallbacks(visualUpdate);
+        lastVisualUpdateMs = 0L;
         updateVisuals();
     }
 
@@ -765,11 +1224,16 @@ public final class VehicleFinderActivity extends BaseActivity
         updateFreshness();
         String warning = "";
 
+        boolean blePrimary = bleController.isPrimary();
+        if (blePrimary) {
+            showBleDistance();
+        }
         if (!hasLocationPermission()) {
             showUnavailable(
                     R.string.finder_distance_placeholder,
                     R.string.finder_direction_placeholder,
-                    getString(R.string.finder_permission_hint)
+                    getString(R.string.finder_permission_hint),
+                    blePrimary
             );
             showLocationPermissionAction();
             return;
@@ -781,7 +1245,8 @@ public final class VehicleFinderActivity extends BaseActivity
                     R.string.finder_direction_placeholder,
                     locationEnabled
                             ? getString(R.string.finder_waiting_location)
-                            : getString(R.string.finder_location_off_hint)
+                            : getString(R.string.finder_location_off_hint),
+                    blePrimary
             );
             if (!locationEnabled) {
                 showAction(
@@ -799,7 +1264,8 @@ public final class VehicleFinderActivity extends BaseActivity
                     R.string.finder_direction_placeholder,
                     isLocationEnabled()
                             ? getString(R.string.finder_waiting_location)
-                            : getString(R.string.finder_location_off_hint)
+                            : getString(R.string.finder_location_off_hint),
+                    blePrimary
             );
             if (!isLocationEnabled()) {
                 showAction(
@@ -824,148 +1290,218 @@ public final class VehicleFinderActivity extends BaseActivity
         float distanceMeters = results[0];
         float bearing = results[1];
         boolean locationEnabled = isLocationEnabled();
-        Location qualityLocation = latestObservedLocation != null
-                ? latestObservedLocation
-                : currentLocation;
         boolean positionFresh = isFresh(currentLocation);
-        boolean qualityFresh = isFresh(qualityLocation);
-        boolean locationUsable = locationEnabled && positionFresh && qualityFresh;
-        boolean providerAvailable = isProviderAvailable(qualityLocation);
+        boolean locationUsable = locationEnabled && positionFresh;
+        boolean providerAvailable = isProviderAvailable(currentLocation);
         long qualityAgeMs = VehicleFinderMath.locationAgeMs(
-                qualityLocation.getElapsedRealtimeNanos(),
+                currentLocation.getElapsedRealtimeNanos(),
                 SystemClock.elapsedRealtimeNanos(),
-                qualityLocation.getTime(),
+                currentLocation.getTime(),
                 System.currentTimeMillis()
         );
-        float accuracyMeters = qualityLocation.hasAccuracy()
-                ? qualityLocation.getAccuracy()
+        float accuracyMeters = currentLocation.hasAccuracy()
+                ? currentLocation.getAccuracy()
                 : 0f;
         accuracyQuality = VehicleFinderMath.accuracyQuality(
                 accuracyMeters,
                 accuracyQuality
         );
-        logAccuracyQuality(accuracyQuality);
-        tvDistance.setText(formatFinderDistance(
-                distanceMeters,
-                accuracyMeters,
-                locationUsable
-        ));
-        radarView.setProximity(1f - Math.min(1f, distanceMeters / 300f));
+        if (!blePrimary) {
+            tvDistance.setText(formatFinderDistance(
+                    distanceMeters,
+                    accuracyMeters,
+                    locationUsable
+            ));
+            radarView.setProximity(1f - Math.min(1f, distanceMeters / 300f));
+        }
         imgArrow.setAlpha(1f);
 
-        boolean inEstimatedTargetArea = distanceMeters <= 8f
-                || (accuracyMeters > 0f && distanceMeters <= accuracyMeters);
+        boolean positionCurrentForNear = providerAvailable
+                && qualityAgeMs >= 0L
+                && qualityAgeMs <= VehicleFinderMath.DIRECTION_HOLD_MAX_AGE_MS
+                && accuracyMeters > 0f;
+        boolean inEstimatedTargetArea = positionCurrentForNear
+                && (distanceMeters <= 8f || distanceMeters <= accuracyMeters);
+        boolean headingReliable = headingTracker.hasHeading()
+                && headingTracker.isReliable();
         boolean directionDataReady = VehicleFinderMath.canUseLocationForDirection(
                 qualityAgeMs,
                 accuracyMeters,
+                distanceMeters,
                 providerAvailable
         );
         boolean canShowDirectionArrow = VehicleFinderMath.canShowDirectionArrow(
                 qualityAgeMs,
                 accuracyMeters,
+                distanceMeters,
                 providerAvailable,
-                hasHeading && isHeadingReliable()
+                headingReliable
         );
-        String directionState;
-        if (!locationUsable) {
-            directionState = "location-stale";
-            imgArrow.setVisibility(View.GONE);
-            tvDirection.setText(R.string.finder_direction_stale);
-            imgArrow.setContentDescription(getString(R.string.finder_direction_stale));
-        } else if (!directionDataReady) {
-            directionState = !providerAvailable
-                    ? "provider-unavailable"
-                    : qualityAgeMs > VehicleFinderMath.DIRECTION_MAX_AGE_MS
-                    ? "fix-older-than-5s"
-                    : "accuracy-over-25m";
-            imgArrow.setVisibility(View.GONE);
-            int directionRes = !providerAvailable
-                    ? R.string.finder_direction_provider_unavailable
-                    : qualityAgeMs > VehicleFinderMath.DIRECTION_MAX_AGE_MS
-                    ? R.string.finder_direction_stale
-                    : R.string.finder_direction_location_uncertain;
-            tvDirection.setText(directionRes);
-            imgArrow.setContentDescription(getString(directionRes));
-        } else if (inEstimatedTargetArea) {
-            directionState = "near-target";
-            imgArrow.setVisibility(View.GONE);
-            int directionRes = VehicleFinderMath.isReliableNearTarget(
-                    distanceMeters,
-                    accuracyMeters
-            )
-                    ? R.string.finder_direction_here
-                    : R.string.finder_direction_near_uncertain;
-            tvDirection.setText(directionRes);
-            imgArrow.setContentDescription(getString(directionRes));
-        } else if (canShowDirectionArrow) {
-            directionState = "relative-arrow";
-            imgArrow.setVisibility(View.VISIBLE);
-            float relative = VehicleFinderMath.normalizeSignedDegrees(
-                    bearing - headingDegrees
-            );
-            imgArrow.setRotation(relative);
-            String label = relativeDirectionLabel(relative);
-            tvDirection.setText(label);
-            imgArrow.setContentDescription(label);
-        } else {
-            directionState = "map-bearing";
-            imgArrow.setVisibility(View.GONE);
-            String label = getString(
-                    R.string.finder_direction_north_format,
-                    cardinalDirection(bearing)
-            );
-            tvDirection.setText(label);
-            imgArrow.setContentDescription(label);
-        }
-        logDirectionState(directionState, providerAvailable);
-
-        if (!locationEnabled) {
-            warning = appendHint(warning, getString(R.string.finder_location_off_hint));
-        } else if (!positionFresh || !qualityFresh) {
-            warning = appendHint(
-                    warning,
-                    getString(R.string.finder_current_location_stale)
-            );
-        } else if (accuracyQuality == VehicleFinderMath.ACCURACY_MODERATE) {
-            warning = appendHint(
-                    warning,
-                    getString(
-                            R.string.finder_hint_accuracy_moderate,
-                            VehicleFinderMath.bucketAccuracyMeters(
-                                    accuracyMeters,
-                                    accuracyQuality
-                            )
-                    )
-            );
-        } else if (accuracyQuality == VehicleFinderMath.ACCURACY_POOR) {
-            warning = appendHint(
-                    warning,
-                    getString(
-                            R.string.finder_hint_accuracy_poor,
-                            VehicleFinderMath.bucketAccuracyMeters(
-                                    accuracyMeters,
-                                    accuracyQuality
-                            )
-                    )
-            );
-        }
-        if (directionDataReady && !directionSensorAvailable) {
-            warning = appendHint(
-                    warning,
-                    getString(R.string.finder_hint_compass_unavailable)
-            );
-        } else if (directionDataReady && !isHeadingReliable()) {
-            warning = appendHint(
-                    warning,
-                    getString(R.string.finder_hint_compass_unreliable)
-            );
-        }
         long targetLastUploadAtMs = target.lastUploadAtMs();
         boolean uploadTimeKnown = targetLastUploadAtMs > 0L;
         long uploadAge = uploadTimeKnown
                 ? Math.max(0L, System.currentTimeMillis() - targetLastUploadAtMs)
                 : 0L;
         int targetFreshness = VehicleFinderMath.targetFreshness(uploadTimeKnown, uploadAge);
+        if (directionDataReady) {
+            heldBearingDegrees = bearing;
+            heldBearingDistanceMeters = distanceMeters;
+            hasHeldBearing = true;
+        }
+        boolean heldDirectionConsistent = hasHeldBearing
+                && VehicleFinderMath.isHeldDirectionConsistent(
+                heldBearingDegrees,
+                bearing,
+                heldBearingDistanceMeters,
+                distanceMeters
+        );
+        boolean directionHold = !canShowDirectionArrow
+                && !inEstimatedTargetArea
+                && VehicleFinderMath.canHoldDirection(
+                        qualityAgeMs,
+                        accuracyMeters,
+                        distanceMeters,
+                        providerAvailable,
+                        hasHeldBearing,
+                        headingReliable
+                )
+                && heldDirectionConsistent;
+        if (!directionDataReady && !directionHold) {
+            clearHeldBearing();
+        }
+        VehicleFinderDirection.Mode directionMode = VehicleFinderDirection.resolve(
+                locationUsable,
+                providerAvailable,
+                directionDataReady,
+                inEstimatedTargetArea,
+                canShowDirectionArrow,
+                directionHold,
+                qualityAgeMs
+        );
+        String directionState = directionMode.logName;
+        switch (directionMode) {
+            case LOCATION_STALE:
+                imgArrow.setVisibility(View.GONE);
+                tvDirection.setText(R.string.finder_direction_stale);
+                break;
+            case PROVIDER_UNAVAILABLE:
+                imgArrow.setVisibility(View.GONE);
+                tvDirection.setText(R.string.finder_direction_provider_unavailable);
+                break;
+            case NEAR_TARGET:
+                imgArrow.setVisibility(View.GONE);
+                boolean reliableNear = VehicleFinderMath.isReliableNearTarget(
+                        distanceMeters,
+                        accuracyMeters
+                );
+                int directionRes;
+                if (!reliableNear) {
+                    directionRes = R.string.finder_direction_near_uncertain;
+                } else if (targetFreshness == VehicleFinderMath.TARGET_FRESH) {
+                    directionRes = R.string.finder_direction_here;
+                } else {
+                    directionRes = R.string.finder_direction_last_position_here;
+                }
+                tvDirection.setText(directionRes);
+                break;
+            case RELATIVE_ARROW:
+                imgArrow.setVisibility(View.VISIBLE);
+                float relative = VehicleFinderMath.normalizeSignedDegrees(
+                        bearing - headingTracker.headingDegrees()
+                );
+                imgArrow.setRotation(relative);
+                String label = targetAwareDirectionLabel(
+                        relativeDirectionLabel(relative),
+                        targetFreshness
+                );
+                tvDirection.setText(label);
+                imgArrow.setContentDescription(label);
+                break;
+            case MAP_BEARING:
+                imgArrow.setVisibility(View.GONE);
+                String bearingLabel = getString(
+                        R.string.finder_direction_north_format,
+                        cardinalDirection(bearing)
+                );
+                tvDirection.setText(bearingLabel);
+                imgArrow.setContentDescription(bearingLabel);
+                break;
+            case HOLD:
+                imgArrow.setAlpha(0.55f);
+                imgArrow.setVisibility(View.VISIBLE);
+                float heldRelative = VehicleFinderMath.normalizeSignedDegrees(
+                        heldBearingDegrees - headingTracker.headingDegrees()
+                );
+                imgArrow.setRotation(heldRelative);
+                String heldLabel = targetAwareDirectionLabel(
+                        relativeDirectionLabel(heldRelative),
+                        targetFreshness
+                );
+                heldLabel = getString(R.string.finder_direction_hold_format, heldLabel);
+                tvDirection.setText(heldLabel);
+                imgArrow.setContentDescription(heldLabel);
+                break;
+            case FIX_TOO_OLD:
+            case ACCURACY_LIMIT:
+                imgArrow.setVisibility(View.GONE);
+                int fallbackRes = directionMode == VehicleFinderDirection.Mode.FIX_TOO_OLD
+                        ? R.string.finder_direction_stale
+                        : R.string.finder_direction_location_uncertain;
+                tvDirection.setText(fallbackRes);
+                imgArrow.setContentDescription(getString(fallbackRes));
+                break;
+            default:
+                throw new IllegalStateException("Unexpected direction mode");
+        }
+        logDirectionState(
+                directionState,
+                providerAvailable,
+                distanceMeters,
+                bearing,
+                accuracyMeters
+        );
+
+        if (!locationEnabled) {
+            warning = appendHint(warning, getString(R.string.finder_location_off_hint));
+        } else if (!positionFresh) {
+            warning = appendHint(
+                    warning,
+                    getString(R.string.finder_current_location_stale)
+            );
+        }
+        if (directionHold) {
+            warning = appendHint(
+                    warning,
+                    getString(R.string.finder_hint_direction_hold)
+            );
+        }
+        if (!directionDataReady
+                && providerAvailable
+                && qualityAgeMs >= 0L
+                && qualityAgeMs <= VehicleFinderMath.DIRECTION_HOLD_MAX_AGE_MS
+                && accuracyMeters > 0f) {
+            warning = appendHint(
+                    warning,
+                    getString(
+                            R.string.finder_hint_direction_accuracy,
+                            VehicleFinderMath.bucketAccuracyMeters(
+                                    accuracyMeters,
+                                    accuracyQuality
+                            )
+                    )
+            );
+        }
+        if (directionDataReady && !headingTracker.hasSensor()) {
+            warning = appendHint(
+                    warning,
+                    getString(R.string.finder_hint_compass_unavailable)
+            );
+        } else if (directionDataReady && !headingTracker.isReliable()) {
+            warning = appendHint(
+                    warning,
+                    getString(R.string.finder_hint_compass_unreliable)
+            );
+        }
         if (targetFreshness == VehicleFinderMath.TARGET_UNKNOWN) {
             warning = appendHint(warning, getString(R.string.finder_hint_target_unknown));
         } else if (targetFreshness == VehicleFinderMath.TARGET_STALE) {
@@ -984,16 +1520,103 @@ public final class VehicleFinderActivity extends BaseActivity
         }
     }
 
-    private void logAccuracyQuality(int quality) {
-        if (quality == lastLoggedAccuracyQuality) {
-            return;
+    private void showBleDistance() {
+        int distanceRes;
+        float proximity;
+        if (bleController.status() == VehicleBleFinderState.Status.WEAK) {
+            distanceRes = R.string.finder_ble_primary_weak;
+            proximity = bleController.band() == VehicleBleMath.BAND_VERY_NEAR ? 1f : 0.66f;
+        } else if (!bleController.hasTargetSignal()) {
+            distanceRes = R.string.finder_ble_primary_lost;
+            proximity = 0.1f;
+        } else if (bleController.band() == VehicleBleMath.BAND_VERY_NEAR) {
+            distanceRes = R.string.finder_ble_primary_very_near;
+            proximity = 1f;
+        } else if (bleController.band() == VehicleBleMath.BAND_NEAR) {
+            distanceRes = R.string.finder_ble_primary_near;
+            proximity = 0.66f;
+        } else {
+            distanceRes = R.string.finder_ble_primary_lost;
+            proximity = 0.1f;
         }
-        lastLoggedAccuracyQuality = quality;
-        DiagnosticLog.detail("FinderLoc", "accuracy=" + quality);
+        tvDistance.setText(distanceRes);
+        radarView.setProximity(proximity);
     }
 
-    private void logDirectionState(String state, boolean providerAvailable) {
-        String signature = state + "|" + providerAvailable + "|" + accuracyQuality;
+    private void logBleState(String state) {
+        String message = state
+                + " band=" + bleBandLabel(bleController.band())
+                + " scanning=" + bleController.isScanning();
+        if ("start".equals(state)
+                || "stop".equals(state)
+                || "timeout".equals(state)
+                || "failed".equals(state)) {
+            DiagnosticLog.event("FinderBle", message);
+        } else {
+            DiagnosticLog.detail("FinderBle", message);
+        }
+    }
+
+    @Override
+    public VehicleFinderTargetState target() {
+        return target;
+    }
+
+    @Override
+    public void onBleStateChanged() {
+        if (isFinishing() || isDestroyed()) {
+            return;
+        }
+        updateBlePanel();
+        updateVisualsNow();
+    }
+
+    @Override
+    public void onBleLog(String state) {
+        if (!isFinishing() && !isDestroyed()) {
+            logBleState(state);
+        }
+    }
+
+    private void logDirectionState(
+            String state,
+            boolean providerAvailable,
+            float distanceMeters,
+            float bearingDegrees,
+            float accuracyMeters
+    ) {
+        String distanceBucket = distanceBucket(distanceMeters);
+        String directionAccuracy = directionAccuracyLabel(distanceMeters, accuracyMeters);
+        String heading = headingDiagnosticState();
+        String headingSector = headingTracker.hasHeading()
+                ? directionSector(headingTracker.headingDegrees())
+                : "unavailable";
+        String arrowSector = headingTracker.hasHeading()
+                ? directionSector(bearingDegrees - headingTracker.headingDegrees())
+                : "unavailable";
+        String accuracyRatio = directionAccuracyRatioLabel(distanceMeters, accuracyMeters);
+        String holdDelta = hasHeldBearing
+                ? holdDistanceDeltaLabel(distanceMeters)
+                + "/" + holdBearingDeltaLabel(bearingDegrees)
+                : "none";
+        String targetSource = target.source().name();
+        String targetAge = targetAgeDiagnosticState();
+        String near = "near-target".equals(state)
+                ? nearTargetReason(distanceMeters, accuracyMeters)
+                : "none";
+        String signature = state
+                + "|" + providerAvailable
+                + "|" + accuracyQuality
+                + "|" + distanceBucket
+                + "|" + directionAccuracy
+                + "|" + heading
+                + "|" + headingSector
+                + "|" + arrowSector
+                + "|" + accuracyRatio
+                + "|" + holdDelta
+                + "|" + targetSource
+                + "|" + targetAge
+                + "|" + near;
         if (signature.equals(lastDirectionDiagnostic)) {
             return;
         }
@@ -1002,29 +1625,189 @@ public final class VehicleFinderActivity extends BaseActivity
                 "FinderLoc",
                 "direction=" + state
                         + " providerAvailable=" + providerAvailable
-                        + " quality=" + accuracyQuality
+                        + " quality=" + accuracyQualityLabel(accuracyQuality)
+                        + " rangeSource=" + (bleController.isPrimary() ? "ble" : "map")
+                        + " mapDistance=" + distanceBucket
+                        + " directionAccuracy=" + directionAccuracy
+                        + " heading=" + heading
+                        + " headingSector=" + headingSector
+                        + " arrowSector=" + arrowSector
+                        + " accuracyRatio=" + accuracyRatio
+                        + " holdDelta=" + holdDelta
+                        + " target=" + targetSource
+                        + " targetAge=" + targetAge
+                        + " near=" + near
         );
+    }
+
+    private static String directionSector(float degrees) {
+        float normalized = VehicleFinderMath.normalizeDegrees(degrees);
+        int sector = Math.floorDiv(Math.round(normalized), 45) % 8;
+        return new String[]{"N", "NE", "E", "SE", "S", "SW", "W", "NW"}[sector];
+    }
+
+    private static String directionAccuracyRatioLabel(
+            float distanceMeters,
+            float accuracyMeters
+    ) {
+        if (distanceMeters <= 0f || accuracyMeters <= 0f) {
+            return "unknown";
+        }
+        if (VehicleFinderMath.isDirectionAccuracySufficient(
+                distanceMeters,
+                accuracyMeters
+        )) {
+            return "tight";
+        }
+        if (accuracyMeters
+                <= VehicleFinderMath.directionHoldAccuracyLimitMeters(distanceMeters)) {
+            return "limited";
+        }
+        float ratio = accuracyMeters / distanceMeters;
+        return ratio <= 1f ? "overlap" : "invalid";
+    }
+
+    private String holdDistanceDeltaLabel(float distanceMeters) {
+        return Math.abs(distanceMeters - heldBearingDistanceMeters)
+                <= VehicleFinderMath.DIRECTION_HOLD_MAX_DISPLACEMENT_METERS
+                ? "<=5m"
+                : ">5m";
+    }
+
+    private String holdBearingDeltaLabel(float bearingDegrees) {
+        float delta = Math.abs(VehicleFinderMath.normalizeSignedDegrees(
+                bearingDegrees - heldBearingDegrees
+        ));
+        if (delta <= 15f) {
+            return "<=15deg";
+        }
+        if (delta <= VehicleFinderMath.DIRECTION_HOLD_MAX_BEARING_DELTA_DEGREES) {
+            return "16-45deg";
+        }
+        return ">45deg";
+    }
+
+    private String headingDiagnosticState() {
+        if (!headingTracker.hasSensor() || !headingTracker.hasHeading()) {
+            return "unavailable";
+        }
+        return headingTracker.isReliable() ? "ok" : "unreliable";
+    }
+
+    private String targetAgeDiagnosticState() {
+        long lastUploadAtMs = target.lastUploadAtMs();
+        boolean known = lastUploadAtMs > 0L;
+        long ageMs = known
+                ? Math.max(0L, System.currentTimeMillis() - lastUploadAtMs)
+                : 0L;
+        switch (VehicleFinderMath.targetFreshness(known, ageMs)) {
+            case VehicleFinderMath.TARGET_FRESH:
+                return "fresh";
+            case VehicleFinderMath.TARGET_AGING:
+                return "aging";
+            case VehicleFinderMath.TARGET_STALE:
+                return "stale";
+            default:
+                return "unknown";
+        }
+    }
+
+    private static String accuracyQualityLabel(int quality) {
+        if (quality == VehicleFinderMath.ACCURACY_GOOD) {
+            return "good";
+        }
+        if (quality == VehicleFinderMath.ACCURACY_MODERATE) {
+            return "moderate";
+        }
+        if (quality == VehicleFinderMath.ACCURACY_POOR) {
+            return "poor";
+        }
+        return "unknown";
+    }
+
+    private static String distanceBucket(float distanceMeters) {
+        if (Float.isNaN(distanceMeters) || Float.isInfinite(distanceMeters)
+                || distanceMeters < 0f) {
+            return "unknown";
+        }
+        if (distanceMeters <= 8f) {
+            return "<=8m";
+        }
+        if (distanceMeters <= 20f) {
+            return "9-20m";
+        }
+        if (distanceMeters <= 50f) {
+            return "21-50m";
+        }
+        if (distanceMeters <= 100f) {
+            return "51-100m";
+        }
+        return ">100m";
+    }
+
+    private static String directionAccuracyLabel(
+            float distanceMeters,
+            float accuracyMeters
+    ) {
+        if (accuracyMeters <= 0f) {
+            return "unknown";
+        }
+        if (VehicleFinderMath.isDirectionAccuracySufficient(
+                distanceMeters,
+                accuracyMeters
+        )) {
+            return "sufficient";
+        }
+        if (accuracyMeters
+                <= VehicleFinderMath.directionHoldAccuracyLimitMeters(distanceMeters)) {
+            return "hold-only";
+        }
+        return accuracyMeters <= 80f ? "moderate" : "poor";
+    }
+
+    private static String nearTargetReason(float distanceMeters, float accuracyMeters) {
+        if (distanceMeters <= 8f) {
+            return "fixed-8m";
+        }
+        if (accuracyMeters > 0f && distanceMeters <= accuracyMeters) {
+            return "within-accuracy";
+        }
+        return "none";
+    }
+
+    private static String bleBandLabel(int band) {
+        if (band == VehicleBleMath.BAND_VERY_NEAR) {
+            return "very_near";
+        }
+        if (band == VehicleBleMath.BAND_NEAR) {
+            return "near";
+        }
+        if (band == VehicleBleMath.BAND_FAR) {
+            return "far";
+        }
+        return "none";
     }
 
     private void showUnavailable(
             int distanceRes,
             int directionRes,
-            String warning
+            String warning,
+            boolean keepDistance
     ) {
-        tvDistance.setText(distanceRes);
+        if (!keepDistance) {
+            tvDistance.setText(distanceRes);
+            radarView.setProximity(0.1f);
+        }
         tvDirection.setText(directionRes);
         imgArrow.setVisibility(View.GONE);
-        radarView.setProximity(0.1f);
         setHint(warning);
     }
 
     private void setHint(String warning) {
         if (warning == null || warning.isEmpty()) {
             tvHint.setText("");
-            tvHint.setBackground(null);
             tvHint.setVisibility(View.GONE);
         } else {
-            tvHint.setBackgroundResource(R.drawable.bg_input);
             tvHint.setText(warning);
             tvHint.setVisibility(View.VISIBLE);
         }
@@ -1038,8 +1821,16 @@ public final class VehicleFinderActivity extends BaseActivity
     }
 
     private void updateFreshness() {
-        if (refreshingTarget || reacquiringLocation) {
+        if (refreshingTarget) {
             tvFreshness.setText(R.string.finder_refreshing_vehicle);
+            return;
+        }
+        if (reacquiringLocation) {
+            tvFreshness.setText(R.string.finder_refreshing_location);
+            return;
+        }
+        if (lastTargetRefreshMissed) {
+            tvFreshness.setText(R.string.finder_target_refresh_failed);
             return;
         }
         long targetLastUploadAtMs = target.lastUploadAtMs();
@@ -1053,23 +1844,8 @@ public final class VehicleFinderActivity extends BaseActivity
         tvFreshness.setText(getString(
                 R.string.finder_last_upload_format,
                 format.format(new Date(targetLastUploadAtMs)),
-                uploadAgeLabel(ageMs)
+                formatUploadAge(ageMs)
         ));
-    }
-
-    private String uploadAgeLabel(long ageMs) {
-        long minutes = Math.max(0L, ageMs) / 60_000L;
-        if (minutes < 1L) {
-            return getString(R.string.bike_upload_just_now);
-        }
-        if (minutes < 60L) {
-            return getString(R.string.bike_upload_minutes_ago, minutes);
-        }
-        long hours = minutes / 60L;
-        if (hours < 24L) {
-            return getString(R.string.bike_upload_hours_ago, hours);
-        }
-        return getString(R.string.bike_upload_days_ago, hours / 24L);
     }
 
     private String formatFinderDistance(
@@ -1087,7 +1863,7 @@ public final class VehicleFinderActivity extends BaseActivity
                     formatDistanceMagnitude(approximateMeters)
             );
         }
-        if (accuracyQuality == VehicleFinderMath.ACCURACY_POOR && accuracyMeters > 0f) {
+        if (accuracyMeters > VehicleFinderMath.DIRECTION_MAX_ACCURACY_METERS) {
             int radius = VehicleFinderMath.bucketAccuracyMeters(
                     accuracyMeters,
                     accuracyQuality
@@ -1152,6 +1928,16 @@ public final class VehicleFinderActivity extends BaseActivity
         return getString(R.string.finder_direction_left_ahead);
     }
 
+    private String targetAwareDirectionLabel(String label, int targetFreshness) {
+        if (targetFreshness == VehicleFinderMath.TARGET_FRESH) {
+            return label;
+        }
+        if (targetFreshness == VehicleFinderMath.TARGET_STALE) {
+            return getString(R.string.finder_direction_expired_format, label);
+        }
+        return getString(R.string.finder_direction_last_position_format, label);
+    }
+
     private String cardinalDirection(float degrees) {
         if (degrees < 22.5f || degrees >= 337.5f) {
             return getString(R.string.finder_cardinal_north);
@@ -1189,16 +1975,6 @@ public final class VehicleFinderActivity extends BaseActivity
         btnAction.setVisibility(View.GONE);
     }
 
-    private boolean hasLocationPermission() {
-        return hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
-                || hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION);
-    }
-
-    private boolean hasPermission(String permission) {
-        return ContextCompat.checkSelfPermission(this, permission)
-                == PackageManager.PERMISSION_GRANTED;
-    }
-
     private boolean isLocationEnabled() {
         if (locationManager == null) {
             return false;
@@ -1210,108 +1986,17 @@ public final class VehicleFinderActivity extends BaseActivity
                 || locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
     }
 
-    private void registerSensors() {
-        if (sensorManager == null) {
-            return;
-        }
-        if (rotationSensor != null) {
-            sensorManager.registerListener(this, rotationSensor, SensorManager.SENSOR_DELAY_UI);
-        } else {
-            if (accelerometer != null) {
-                sensorManager.registerListener(
-                        this,
-                        accelerometer,
-                        SensorManager.SENSOR_DELAY_UI
-                );
-            }
-            if (magnetometer != null) {
-                sensorManager.registerListener(
-                        this,
-                        magnetometer,
-                        SensorManager.SENSOR_DELAY_UI
-                );
-            }
-        }
+    private void clearHeldBearing() {
+        hasHeldBearing = false;
+        heldBearingDegrees = 0f;
+        heldBearingDistanceMeters = 0f;
     }
 
-    private void unregisterSensors() {
-        if (sensorManager != null) {
-            sensorManager.unregisterListener(this);
-        }
-        hasHeading = false;
-        hasGravity = false;
-        hasGeomagnetic = false;
-        headingSensorAccuracy = SensorManager.SENSOR_STATUS_ACCURACY_HIGH;
-    }
-
-    @Override
-    public void onSensorChanged(SensorEvent event) {
-        if (event.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
-            headingSensorAccuracy = event.accuracy;
-            SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values);
-        } else if (event.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
-            lowPass(event.values, gravity);
-            hasGravity = true;
-            if (!hasGeomagnetic
-                    || !SensorManager.getRotationMatrix(
-                    rotationMatrix,
-                    null,
-                    gravity,
-                    geomagnetic
-            )) {
-                return;
-            }
-        } else if (event.sensor.getType() == Sensor.TYPE_MAGNETIC_FIELD) {
-            lowPass(event.values, geomagnetic);
-            hasGeomagnetic = true;
-            if (!hasGravity
-                    || !SensorManager.getRotationMatrix(
-                    rotationMatrix,
-                    null,
-                    gravity,
-                    geomagnetic
-            )) {
-                return;
-            }
-        } else {
-            return;
-        }
-
-        SensorManager.getOrientation(rotationMatrix, orientation);
-        float reading = VehicleFinderMath.normalizeDegrees(
-                (float) Math.toDegrees(orientation[0])
-        );
-        if (!hasHeading) {
-            headingDegrees = reading;
-            hasHeading = true;
-        } else {
-            float delta = VehicleFinderMath.normalizeSignedDegrees(reading - headingDegrees);
-            headingDegrees = VehicleFinderMath.normalizeDegrees(
-                    headingDegrees + delta * 0.18f
-            );
+    private void onHeadingChanged() {
+        if (!headingTracker.isReliable()) {
+            clearHeldBearing();
         }
         scheduleVisualUpdate();
-    }
-
-    private void lowPass(float[] input, float[] output) {
-        for (int index = 0; index < output.length; index++) {
-            output[index] = output[index] * 0.82f + input[index] * 0.18f;
-        }
-    }
-
-    @Override
-    public void onAccuracyChanged(Sensor sensor, int accuracy) {
-        int type = sensor.getType();
-        if (type == Sensor.TYPE_ROTATION_VECTOR
-                || type == Sensor.TYPE_ACCELEROMETER
-                || type == Sensor.TYPE_MAGNETIC_FIELD) {
-            headingSensorAccuracy = accuracy;
-            scheduleVisualUpdate();
-        }
-    }
-
-    private boolean isHeadingReliable() {
-        return headingSensorAccuracy >= SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM;
     }
 
     @Override
@@ -1325,13 +2010,23 @@ public final class VehicleFinderActivity extends BaseActivity
             startLocationTracking(!reacquiringLocation);
             scheduleLocationReacquireTimeout();
             updateVisualsNow();
+        } else if (requestCode == REQUEST_BLE_PERMISSIONS) {
+            if (hasBlePermissions()) {
+                // 重新走完整前置检查：定位或蓝牙被关闭时应引导设置，
+                // 而不是直接启动扫描后显示泛化的失败状态。
+                handleBleAction();
+            } else {
+                updateBlePanel();
+            }
         }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        registerSensors();
+        lastLocationDiagnostic = null;
+        lastDirectionDiagnostic = null;
+        headingTracker.register();
         if (!entryRefreshEvaluated) {
             entryRefreshEvaluated = true;
             if (shouldAutoRefreshTarget()) {
@@ -1347,6 +2042,7 @@ public final class VehicleFinderActivity extends BaseActivity
         } else {
             startLocationTracking(true);
         }
+        updateBlePanel();
         updateVisualsNow();
         handler.removeCallbacks(freshnessTick);
         handler.postDelayed(freshnessTick, UI_REFRESH_MS);
@@ -1357,8 +2053,12 @@ public final class VehicleFinderActivity extends BaseActivity
         handler.removeCallbacks(freshnessTick);
         handler.removeCallbacks(visualUpdate);
         handler.removeCallbacks(locationReacquireTimeout);
+        if (bleController != null && bleController.isScanning()) {
+            bleController.stop(false, false);
+        }
         stopLocationTracking();
-        unregisterSensors();
+        headingTracker.unregister();
+        clearHeldBearing();
         super.onPause();
     }
 
@@ -1367,6 +2067,9 @@ public final class VehicleFinderActivity extends BaseActivity
         handler.removeCallbacksAndMessages(null);
         if (repository != null) {
             repository.shutdown();
+        }
+        if (bleController != null) {
+            bleController.destroy();
         }
         super.onDestroy();
     }
@@ -1377,10 +2080,15 @@ public final class VehicleFinderActivity extends BaseActivity
                 STATE_LOCATION_PERMISSION_REQUESTED,
                 locationPermissionRequested
         );
+        outState.putBoolean(
+                STATE_BLE_PERMISSION_REQUESTED,
+                blePermissionRequested
+        );
         outState.putDouble(STATE_TARGET_LATITUDE, target.latitude());
         outState.putDouble(STATE_TARGET_LONGITUDE, target.longitude());
         outState.putLong(STATE_TARGET_LAST_UPLOAD, target.lastUploadAtMs());
         outState.putString(STATE_TARGET_SOURCE, target.source().name());
+        outState.putString(STATE_TARGET_BLUETOOTH_NAME, target.bluetoothName());
         super.onSaveInstanceState(outState);
     }
 
@@ -1392,15 +2100,7 @@ public final class VehicleFinderActivity extends BaseActivity
         int contentBaseBottom = dp(16);
         ViewCompat.setOnApplyWindowInsetsListener(root, (view, windowInsets) -> {
             Insets systemBars = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars());
-            ViewGroup.LayoutParams params = header.getLayoutParams();
-            params.height = headerBaseHeight + systemBars.top;
-            header.setLayoutParams(params);
-            header.setPadding(
-                    header.getPaddingLeft(),
-                    systemBars.top,
-                    header.getPaddingRight(),
-                    0
-            );
+            applyHeaderInsets(header, headerBaseHeight, systemBars.top);
             content.setPadding(
                     content.getPaddingLeft(),
                     content.getPaddingTop(),
@@ -1410,9 +2110,5 @@ public final class VehicleFinderActivity extends BaseActivity
             return windowInsets;
         });
         ViewCompat.requestApplyInsets(root);
-    }
-
-    private int dp(int value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
     }
 }

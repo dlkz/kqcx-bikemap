@@ -6,7 +6,6 @@ import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
 import android.view.View;
-import android.view.ViewGroup;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -157,21 +156,9 @@ public final class AboutActivity extends BaseActivity {
         int baseHeight = dp(64);
         ViewCompat.setOnApplyWindowInsetsListener(root, (view, windowInsets) -> {
             Insets systemBars = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars());
-            ViewGroup.LayoutParams params = header.getLayoutParams();
-            params.height = baseHeight + systemBars.top;
-            header.setLayoutParams(params);
-            header.setPadding(
-                    header.getPaddingLeft(),
-                    systemBars.top,
-                    header.getPaddingRight(),
-                    0
-            );
+            applyHeaderInsets(header, baseHeight, systemBars.top);
             return windowInsets;
         });
         ViewCompat.requestApplyInsets(root);
-    }
-
-    private int dp(int value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
     }
 }

@@ -37,6 +37,7 @@ public final class BikeRepository {
      */
     private static final String ONE_CAR_URL =
             "https://api.kvcoogo.com/ManagerApi/api/v2.0.0/queryOneCar";
+    private static final int ERROR_VEHICLE_UNAVAILABLE = 50006;
     private static final DateTimeFormatter LAST_UPLOAD_FORMAT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final ZoneId SERVICE_ZONE = ZoneId.of("Asia/Shanghai");
@@ -52,6 +53,10 @@ public final class BikeRepository {
         void onSuccess(Bike bike);
 
         void onError(String message);
+
+        default void onUnavailable(int errorCode, String message) {
+            onError(message);
+        }
     }
 
     /** 兜底提示的字符串资源 id，实际文案在 strings.xml 中维护。 */
@@ -81,7 +86,17 @@ public final class BikeRepository {
     public void fetchNearby(double centerLatitude, double centerLongitude, Callback callback) {
         execute(() -> {
             try {
-                List<Bike> bikes = request(centerLatitude, centerLongitude);
+                String response = executePost(
+                        API_URL,
+                        "lat=" + centerLatitude
+                                + "&lng=" + centerLongitude
+                                + "&deviceType=1"
+                );
+                List<Bike> bikes = parseBikes(
+                        response,
+                        centerLatitude,
+                        centerLongitude
+                );
                 mainHandler.post(() -> callback.onSuccess(bikes, System.currentTimeMillis()));
             } catch (Exception exception) {
                 String finalMessage = toUserMessage(exception);
@@ -93,7 +108,7 @@ public final class BikeRepository {
     /**
      * 按完整车号点名查询一辆车。与附近查询共用同一个单线程 executor，避免两条
      * 请求链路上的连接互相干扰；查不到（车号不存在 / 坐标无效）按正常结果回调
-     * null，只有网络或服务故障才走 onError。
+     * null；租用中等业务状态走 onUnavailable，其他网络或服务故障才走 onError。
      */
     public void queryOneCar(
             String carNum,
@@ -116,6 +131,13 @@ public final class BikeRepository {
                         centerLongitude
                 );
                 mainHandler.post(() -> callback.onSuccess(bike));
+            } catch (ServiceException exception) {
+                String finalMessage = toUserMessage(exception);
+                mainHandler.post(() -> dispatchBikeCallbackError(
+                        exception.errorCode,
+                        finalMessage,
+                        callback
+                ));
             } catch (Exception exception) {
                 String finalMessage = toUserMessage(exception);
                 mainHandler.post(() -> callback.onError(finalMessage));
@@ -156,20 +178,6 @@ public final class BikeRepository {
             }
             executor.execute(task);
         }
-    }
-
-    private List<Bike> request(double centerLatitude, double centerLongitude) throws Exception {
-        String response = executeRequest(centerLatitude, centerLongitude);
-        return parseBikes(response, centerLatitude, centerLongitude);
-    }
-
-    private String executeRequest(double centerLatitude, double centerLongitude) throws Exception {
-        return executePost(
-                API_URL,
-                "lat=" + centerLatitude
-                        + "&lng=" + centerLongitude
-                        + "&deviceType=1"
-        );
     }
 
     private String executePost(String url, String body) throws Exception {
@@ -285,12 +293,18 @@ public final class BikeRepository {
      * 回落为通用服务提示。
      */
     private void throwIfEnvelopeError(JSONObject root) throws ServiceException {
-        if (root.optInt("errorCode", -1) == 0) {
+        int errorCode = errorCodeFromEnvelope(root);
+        if (errorCode == 0) {
             return;
         }
-        throw new ServiceException(safeServiceMessage(
-                root.optString("resultMsg", "")
-        ));
+        throw new ServiceException(
+                errorCode,
+                safeServiceMessage(root.optString("resultMsg", ""))
+        );
+    }
+
+    static int errorCodeFromEnvelope(JSONObject root) {
+        return root.optInt("errorCode", -1);
     }
 
     private Bike parseBike(
@@ -317,7 +331,7 @@ public final class BikeRepository {
         double longitude = car.optDouble("lng", Double.NaN);
         if (!number.matches("\\d{9}")
                 || "000000000".equals(number)
-                || !isValidCoordinate(latitude, longitude)) {
+                || !CoordinateUtils.isValidLatLng(latitude, longitude)) {
             return null;
         }
 
@@ -354,6 +368,9 @@ public final class BikeRepository {
                 latitude,
                 longitude
         );
+        String bluetoothName = car.isNull("bluetoothName")
+                ? ""
+                : car.optString("bluetoothName", "").trim();
         return new Bike(
                 number,
                 latitude,
@@ -366,7 +383,8 @@ public final class BikeRepository {
                 distance,
                 available,
                 true,
-                lastUploadAtMs
+                lastUploadAtMs,
+                bluetoothName
         );
     }
     private static String readAll(InputStream stream) throws Exception {
@@ -406,8 +424,31 @@ public final class BikeRepository {
     }
 
     private static final class ServiceException extends Exception {
+        final int errorCode;
+
         ServiceException(String message) {
+            this(Integer.MIN_VALUE, message);
+        }
+
+        ServiceException(int errorCode, String message) {
             super(message);
+            this.errorCode = errorCode;
+        }
+    }
+
+    static boolean isVehicleUnavailableErrorCode(int errorCode) {
+        return errorCode == ERROR_VEHICLE_UNAVAILABLE;
+    }
+
+    static void dispatchBikeCallbackError(
+            int errorCode,
+            String message,
+            BikeCallback callback
+    ) {
+        if (isVehicleUnavailableErrorCode(errorCode)) {
+            callback.onUnavailable(errorCode, message);
+        } else {
+            callback.onError(message);
         }
     }
 
@@ -454,16 +495,6 @@ public final class BikeRepository {
         } catch (DateTimeParseException ignored) {
             return 0L;
         }
-    }
-
-    private static boolean isValidCoordinate(double latitude, double longitude) {
-        return !Double.isNaN(latitude)
-                && !Double.isNaN(longitude)
-                && latitude >= -90
-                && latitude <= 90
-                && longitude >= -180
-                && longitude <= 180
-                && (latitude != 0 || longitude != 0);
     }
 
     private static float distanceMeters(

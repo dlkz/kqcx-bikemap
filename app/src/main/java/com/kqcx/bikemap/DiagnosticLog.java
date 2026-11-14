@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.os.Build;
 import android.util.Log;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -97,7 +98,7 @@ final class DiagnosticLog {
                 + " (" + BuildConfig.BUILD_NUMBER + ")");
     }
 
-    /** 事件骨架：始终记录，内容不含任何用户数据。 */
+    /** 事件骨架：始终记录，不主动记录坐标、完整编号、凭据或用户输入。 */
     static void event(String tag, String message) {
         write("I", tag, message, null);
     }
@@ -174,7 +175,7 @@ final class DiagnosticLog {
             if (summary.length() > 0) {
                 summary.append(" · ");
             }
-            summary.append("事件日志 ").append(Math.max(1L, eventBytes / 1024L)).append(" KB");
+            summary.append("诊断日志 ").append(Math.max(1L, eventBytes / 1024L)).append(" KB");
         }
         return summary.append(" · 经系统分享发送").toString();
     }
@@ -207,31 +208,37 @@ final class DiagnosticLog {
         if (!exportDir.exists() && !exportDir.mkdirs()) {
             throw new IOException("export directory unavailable");
         }
-        String stamp;
+        File target;
         synchronized (LOCK) {
-            stamp = EXPORT_TIME.format(new Date());
-        }
-        File target = new File(exportDir, "bikemap-log-" + stamp + ".txt");
-        try (Writer writer = new OutputStreamWriter(
-                new FileOutputStream(target, false),
-                StandardCharsets.UTF_8
-        )) {
-            appendHeader(writer, app);
-            appendSection(writer, "事件日志（较早）", new File(dir, EVENT_BACKUP));
-            appendSection(writer, "事件日志", new File(dir, EVENT_FILE));
-            List<File> crashes = crashFiles();
-            for (File crash : crashes) {
-                appendSection(writer, "崩溃记录 " + crash.getName(), crash);
-            }
-            if (crashes.isEmpty()) {
-                writer.write("\n===== 崩溃记录 =====\n（无）\n");
+            String stamp = EXPORT_TIME.format(new Date());
+            target = new File(exportDir, "bikemap-log-" + stamp + ".txt");
+            int detailedRecords = countDetailRecords(new File(dir, EVENT_BACKUP))
+                    + countDetailRecords(new File(dir, EVENT_FILE));
+            try (Writer writer = new OutputStreamWriter(
+                    new FileOutputStream(target, false),
+                    StandardCharsets.UTF_8
+            )) {
+                appendHeader(writer, app, detailedRecords);
+                appendSection(writer, "事件日志（较早）", new File(dir, EVENT_BACKUP));
+                appendSection(writer, "事件日志", new File(dir, EVENT_FILE));
+                List<File> crashes = crashFiles();
+                for (File crash : crashes) {
+                    appendSection(writer, "崩溃记录 " + crash.getName(), crash);
+                }
+                if (crashes.isEmpty()) {
+                    writer.write("\n===== 崩溃记录 =====\n（无）\n");
+                }
             }
         }
         pruneExports(exportDir, target);
         return target;
     }
 
-    private static void appendHeader(Writer report, Context app) throws IOException {
+    private static void appendHeader(
+            Writer report,
+            Context app,
+            int detailedRecords
+    ) throws IOException {
         report.write("BikeMap 诊断日志\n");
         report.write("导出时间: " + new SimpleDateFormat(
                 "yyyy-MM-dd HH:mm:ss", Locale.ROOT).format(new Date()) + "\n");
@@ -243,7 +250,8 @@ final class DiagnosticLog {
                 + " (API " + Build.VERSION.SDK_INT + ")\n");
         report.write("机型: " + Build.MANUFACTURER + " "
                 + Build.MODEL + "\n");
-        report.write("详细日志: " + (detailEnabled ? "开启" : "关闭") + "\n");
+        report.write("详细日志开关: " + (detailEnabled ? "开启" : "关闭") + "\n");
+        report.write("报告内详细记录: " + detailedRecords + " 条\n");
         report.write("提醒计时: "
                 + (ReminderScheduler.isActive(app) ? "运行中" : "未运行") + "\n");
         report.write("车辆预警: "
@@ -252,6 +260,27 @@ final class DiagnosticLog {
                 android.Manifest.permission.ACCESS_FINE_LOCATION) ? "已授予" : "未授予") + "\n");
         report.write("通知权限: " + (VehicleAlertService.hasNotificationAccess(app)
                 ? "可用" : "不可用") + "\n\n");
+    }
+
+    static int countDetailRecords(File file) {
+        if (file == null || !file.isFile()) {
+            return 0;
+        }
+        int count = 0;
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                new FileInputStream(file),
+                StandardCharsets.UTF_8
+        ))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.matches("\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3} D .*")) {
+                    count++;
+                }
+            }
+        } catch (IOException ignored) {
+            return 0;
+        }
+        return count;
     }
 
     private static boolean hasPermission(Context context, String permission) {

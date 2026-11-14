@@ -22,8 +22,9 @@
 | Release applicationId | `com.kqcx.bikemap` |
 | Debug applicationId | `com.kqcx.bikemap.debug` |
 | 地图 | osmdroid Android 6.1.18 |
-| 二维码 | ZXing Core 3.4.1 |
-| AndroidX | Core 1.13.1、Activity 1.10.1 |
+| 二维码 | ZXing Core (Java) 3.4.1 |
+| AndroidX | Core / Core KTX 1.13.1、Activity 1.10.1、Lifecycle 2.6.2 |
+| Kotlin 运行时 | Kotlin Standard Library 1.8.22、Coroutines 1.7.3 |
 | 网络 | `HttpURLConnection`，车辆接口为 HTTPS |
 
 依赖声明统一放在 `app/build.gradle.kts`。新增依赖前先确认必要性、许可证、体积和构建影响。
@@ -110,11 +111,22 @@ $env:ANDROID_HOME = "<Android SDK 路径>"
 | 模块 | 职责 |
 |---|---|
 | `MainActivity` | 地图、车辆列表、详情、设置、编号输入和二维码入口 |
-| `VehicleFinderActivity`、`VehicleFinderRadarView` | 地图估算寻车、距离与方向显示、接近脉冲动画 |
+| `VehicleListItemFactory` | 车辆地图卡片和展开列表行的 View 创建与点击绑定 |
+| `VehicleListPanelController` | 车辆列表面板的显示、展开、拖动、渲染和地图控件避让 |
+| `QrHistoryStore` | 最近生成记录的持久化、去重、三条上限和尾号补全 |
+| `VehicleNumberDialogHistoryPanel` | 编号弹窗最近生成与最近寻车区块的渲染和操作 |
+| `VehicleNumberInputController` | 编号输入弹窗、目录异步刷新、范围选择和确认流程 |
+| `VehicleNumberInputResolver` | 完整编号、尾号、候选和加载状态解析 |
+| `BikeDetailPanelController` | 车辆详情卡片绑定、按钮状态和二维码/寻车入口 |
+| `MapRecenterState` | 首次定位、重新定位跟随窗口、用户中断、车辆聚焦和落点代次 |
+| `NearbyQueryState` | 附近车辆请求合并、最短间隔、距离阈值和待处理中心 |
+| `VehicleFinderActivity`、`VehicleFinderRadarView`、`VehicleFinderBleController`、`VehicleHeadingTracker` | 地图估算寻车页面、方向显示、雷达动画、BLE 扫描和指南针稳定状态 |
 | `AppMapView`、`MapLabelOverlay`、Callout 类 | 地图交互、标记和标签显示 |
 | `BikeRepository` | 车辆接口请求、JSON 解析、距离计算和请求链路隔离 |
+| `LocationAcceptancePolicy` | 主页与寻车页共享的定位时间、提供者和精度采纳规则 |
 | `VehicleNumberCatalog` | 内置编号目录、尾号匹配和校园名解析 |
 | `LearnedVehicleNumberStore` | 本机编号与校园名自学习，最多 500 条 LRU |
+| `FinderSnapshotStore`、`FinderSnapshotCapture` | 最近寻车快照的持久化、去重、清除代次和异步蓝牙补全 |
 | `QrGalleryStore` | 二维码保存、所有权校验和延迟清理 |
 | `ReminderScheduler` 及相关类 | 提醒调度、补排和前台倒计时通知 |
 | `VehicleAlertService` | 车辆预警后台检测和通知 |
@@ -166,15 +178,21 @@ $env:ANDROID_HOME = "<Android SDK 路径>"
 
 - `VehicleFinderActivity` 接收车辆 GCJ-02 坐标、最后上报时间和地图页已有的当前位置。
 - `VehicleFinderTargetState` 单独维护车辆位置及 `ESTIMATED` / `REFRESHED` 来源；刷新失败时 source 和坐标都保持不变。
+- 点击车辆详情“寻找车辆”时先保存地图快照，由寻车页单次查询成功后回写 `bluetoothName`；从二维码弹窗或最近生成记录跳转微信时，由 `FinderSnapshotStore` 保存地图位置并异步补充蓝牙名称。本机最多保留 3 条，快照来源使用 `SNAPSHOT`，关闭保留记录时同步清除。
 - 进入寻车页时，如果车辆上报时间未知或超过 2 分钟，会触发一次有界自动刷新；同一 Activity 只自动尝试一次，不做持续轮询。
+- 接口返回的 `bluetoothName` 与目标位置一起保存；缺少蓝牙身份时会触发同一有界刷新，只有 `xlc-...` 精确名称可用于 BLE 辅助。
 - 返回前台时，如果当前位置超过 5 秒，会重新获取一次当前位置；目标车辆来源和刷新后的坐标通过 `savedInstanceState` 恢复。
 - 页面自行监听定位与方向传感器，使用 `Location.distanceBetween` 在设备本地计算距离和绝对方位。
-- 方向箭头仅在手机定位 5 秒内、精度不超过 25 米、provider 可用且方向传感器可靠时显示；否则隐藏箭头，按原因显示地图绝对方位或重新定位提示。
+- 方向箭头只使用同一份已采纳的 `currentLocation` 计算距离、方位和质量；定位误差必须小于按车距计算出的方向阈值，短距离不会再仅凭固定的 25 米上限显示箭头。5–8 秒内的短暂降级可以保持最后方位，但车距变化超过 5 米或方位变化超过 45 度时立即取消保持。指南针需要连续稳定样本后才进入可用状态，重新注册或精度下降时清空旧方位。
 - 刷新按钮同时查询车辆最新上报位置并重新获取手机位置；刷新开始前的缓存点会被忽略，较差的网络定位最多等待 5 秒良好 GPS，超时后才作为实际质量状态提交。
 - 方向传感器报告低精度、不可靠或失去接触时，页面隐藏方向箭头并提示用户移动手机或校准指南针。
-- 车辆位置超过 10 分钟时显示可能已变化的提示，超过 1 小时时使用更强警告；用户可点击刷新，通过 `BikeRepository.queryOneCar` 主动查询一次车辆最新位置。
+- BLE 辅助只在用户主动点击后、`VehicleFinderActivity` 处于前台时扫描；按广播名称精确匹配，不使用 RSSI 最强设备猜测目标。
+- BLE 扫描只读取广播名称和 RSSI，不保存 BLE 地址或广播载荷。
+- 平滑 RSSI 仅用于“很强 / 较强 / 较弱 / 丢失”分档，不换算米数或方向。远端信号只在面板提示，连续样本稳定进入较强档后才接管中央距离；短暂无广播先提示信号减弱，8 秒未恢复才确认丢失。方向箭头仍按地图位置和手机方向计算；停止扫描后恢复地图距离与方向。
+- `200000` 号段的 2 序列 WD 车辆不支持 BLE 辅助；其广播名称与接口逻辑名称不能直接通用匹配，本版本不引入人工映射表。
+- 车辆位置超过 10 分钟时显示可能已变化的提示，超过 1 小时时使用更强警告；非最新位置的方向文案使用“车辆最后位置”或“车辆位置已过期”。用户可点击刷新，通过 `BikeRepository.queryOneCar` 主动查询一次车辆最新位置；车辆查询失败与手机定位刷新完成分别提示。
 - 当前位置超过 2 分钟未更新、定位精度低、车辆上报超过 1 小时或位置未知时必须给出文字警告。
-- 页面明确标注“地图估算”，不把车辆接口坐标或雷达动画表述为 BLE、UWB 或精确近场测距。
+- 地图坐标、雷达动画和 BLE 辅助分别标注，不把地图估算表述为 UWB 或精确近场测距。
 
 ## 6. 数据与隐私
 
@@ -184,6 +202,8 @@ $env:ANDROID_HOME = "<Android SDK 路径>"
 - 地图瓦片由高德开放平台加载。
 - 提醒设置、最近车辆编号和待清理记录仅保存在本机。
 - 车辆预警开启且计时运行时，会按设定间隔定位并查询附近车辆。
+- BLE 广播名称与 RSSI 只在寻车页前台本地处理，不写入持久化存储或常规事件日志；用户开启详细诊断后，日志只记录扫描状态和粗粒度远近分档，不记录原始 RSSI。
+- 寻车快照保存在独立私有 SharedPreferences 中，只包含车辆编号、GCJ-02 坐标、上报时间、快照时间、校园名和 BLE 广播名称；不保存 BLE 地址、RSSI 或手机位置历史。
 - 不保存历史轨迹，不把定位或车辆查询数据发送到未披露服务。
 
 公开数据边界：
@@ -203,24 +223,28 @@ $env:ANDROID_HOME = "<Android SDK 路径>"
 - 日志写入同步完成；导出报告在后台线程生成，完成后回到主线程调起系统分享。
 - `FileProvider` 只暴露 `diagnose-export/` 一个缓存根。
 - 日志不联网、不上传，并排除在云备份和换机迁移之外。
+- 默认事件层记录低频流程节点、最终结果、异常和崩溃；详细层记录定位质量、方向专用精度分档、寻车距离分档、目标来源与年龄、指南针状态、BLE 远近分档、车辆查询结果及后台预警统计。
+- 详细记录只在状态变化或有界检查完成时写入，不记录原始坐标、BLE 地址、原始 RSSI、完整车辆编号或传感器角度。
+- 导出头显示当前详细日志开关和报告内实际详细记录条数；关闭开关只停止新增，不删除已有详细记录。
 - `allowBackup=false`，`backup_rules.xml` 和 `data_extraction_rules.xml` 全量排除诊断数据。
 - `proguard-rules.pro` 当前为空；若将来加入日志裁剪规则，不得连带裁掉 `DiagnosticLog`。
 
 脱敏红线：
 
-- 常规事件日志不主动记录坐标、完整车辆编号、凭据或用户输入。
+- 常规事件日志不主动记录坐标、完整车辆编号、凭据、MediaStore URI 或用户输入；允许记录最多后三位的车辆编号、提醒调度结果和车辆数量。
 - 应用自行记录的车辆编号最多保留后三位。
 - 崩溃堆栈和第三方错误文本只做基础过滤，不保证不含数字或其他敏感内容。
 - 新增日志点前必须确认内容安全。
 
 ## 8. 验证
 
-当前仓库没有完整自动化测试套件。修改后至少执行：
+当前仓库已有 JVM 状态测试和少量设备仪器测试，但仍不是完整测试套件。修改后至少执行：
 
 ```powershell
 .\gradlew.bat :app:lintDebug
 .\gradlew.bat :app:assembleDebug
 .\gradlew.bat :app:assembleRelease
+.\gradlew.bat :app:connectedDebugAndroidTest
 ```
 
 涉及以下功能时，必须补充模拟器或真机验证：

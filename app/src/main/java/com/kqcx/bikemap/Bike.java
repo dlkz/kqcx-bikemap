@@ -17,6 +17,8 @@ public final class Bike {
     public final boolean locationKnown;
     /** Server timestamp in UTC milliseconds for the latest uploaded vehicle data. */
     public final long lastUploadAtMs;
+    /** Exact BLE advertised name supplied by the anonymous vehicle endpoint, when available. */
+    public final String bluetoothName;
 
     public Bike(
             String number,
@@ -30,7 +32,8 @@ public final class Bike {
             float distanceMeters,
             boolean available,
             boolean locationKnown,
-            long lastUploadAtMs
+            long lastUploadAtMs,
+            String bluetoothName
     ) {
         this.number = number;
         this.latitude = latitude;
@@ -44,6 +47,7 @@ public final class Bike {
         this.available = available;
         this.locationKnown = locationKnown;
         this.lastUploadAtMs = lastUploadAtMs;
+        this.bluetoothName = bluetoothName == null ? "" : bluetoothName;
     }
 
     public static Bike manual(String number, String serviceSiteName) {
@@ -59,7 +63,8 @@ public final class Bike {
                 0,
                 false,
                 false,
-                0L
+                0L,
+                ""
         );
     }
 

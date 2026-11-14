@@ -10,7 +10,18 @@ final class VehicleFinderMath {
     static final int TARGET_STALE = 2;
     static final int TARGET_UNKNOWN = 3;
     static final long DIRECTION_MAX_AGE_MS = 5_000L;
+    static final long DIRECTION_HOLD_MAX_AGE_MS = 8_000L;
     static final float DIRECTION_MAX_ACCURACY_METERS = 25f;
+    static final float DIRECTION_HOLD_MAX_ACCURACY_METERS = 45f;
+    static final float DIRECTION_ACCURACY_BASE_METERS = 5f;
+    static final float DIRECTION_HOLD_ACCURACY_BASE_METERS = 10f;
+    static final float DIRECTION_ACCURACY_DISTANCE_RATIO = 0.25f;
+    static final float DIRECTION_HOLD_ACCURACY_DISTANCE_RATIO = 0.5f;
+    static final float DIRECTION_HOLD_MAX_DISPLACEMENT_METERS = 5f;
+    static final float DIRECTION_HOLD_MAX_BEARING_DELTA_DEGREES = 45f;
+    static final float LOCATION_ACCURACY_WORSEN_LIMIT_METERS = 10f;
+    static final float LOCATION_ACCURACY_REPLACE_LIMIT_METERS = 30f;
+    static final float LOCATION_ACCURACY_REPLACE_MULTIPLIER = 2f;
     static final long LOCATION_REACQUIRE_MAX_WAIT_MS = 5_000L;
     private static final long TARGET_AGING_MS = 10L * 60L * 1_000L;
     private static final long TARGET_STALE_MS = 60L * 60L * 1_000L;
@@ -106,26 +117,118 @@ final class VehicleFinderMath {
     static boolean canUseLocationForDirection(
             long locationAgeMs,
             float accuracyMeters,
+            float distanceMeters,
             boolean providerAvailable
     ) {
         return providerAvailable
                 && locationAgeMs >= 0L
                 && locationAgeMs <= DIRECTION_MAX_AGE_MS
-                && accuracyMeters > 0f
-                && accuracyMeters <= DIRECTION_MAX_ACCURACY_METERS;
+                && isDirectionAccuracySufficient(distanceMeters, accuracyMeters);
     }
 
     static boolean canShowDirectionArrow(
             long locationAgeMs,
             float accuracyMeters,
+            float distanceMeters,
             boolean providerAvailable,
             boolean headingReliable
     ) {
         return headingReliable && canUseLocationForDirection(
                 locationAgeMs,
                 accuracyMeters,
+                distanceMeters,
                 providerAvailable
         );
+    }
+
+    static boolean canHoldDirection(
+            long locationAgeMs,
+            float accuracyMeters,
+            float distanceMeters,
+            boolean providerAvailable,
+            boolean hasLastBearing,
+            boolean headingReliable
+    ) {
+        return hasLastBearing
+                && headingReliable
+                && providerAvailable
+                && locationAgeMs >= 0L
+                && locationAgeMs <= DIRECTION_HOLD_MAX_AGE_MS
+                && accuracyMeters > 0f
+                && accuracyMeters <= directionHoldAccuracyLimitMeters(distanceMeters);
+    }
+
+    static boolean isDirectionAccuracySufficient(
+            float distanceMeters,
+            float accuracyMeters
+    ) {
+        return accuracyMeters > 0f
+                && distanceMeters > 0f
+                && accuracyMeters <= directionAccuracyLimitMeters(distanceMeters);
+    }
+
+    static float directionAccuracyLimitMeters(float distanceMeters) {
+        return Math.min(
+                DIRECTION_MAX_ACCURACY_METERS,
+                Math.max(
+                        DIRECTION_ACCURACY_BASE_METERS,
+                        distanceMeters * DIRECTION_ACCURACY_DISTANCE_RATIO
+                )
+        );
+    }
+
+    static float directionHoldAccuracyLimitMeters(float distanceMeters) {
+        return Math.min(
+                DIRECTION_HOLD_MAX_ACCURACY_METERS,
+                Math.max(
+                        DIRECTION_HOLD_ACCURACY_BASE_METERS,
+                        distanceMeters * DIRECTION_HOLD_ACCURACY_DISTANCE_RATIO
+                )
+        );
+    }
+
+    static boolean isHeldDirectionConsistent(
+            float heldBearingDegrees,
+            float currentBearingDegrees,
+            float heldDistanceMeters,
+            float currentDistanceMeters
+    ) {
+        return Math.abs(normalizeSignedDegrees(
+                currentBearingDegrees - heldBearingDegrees
+        )) <= DIRECTION_HOLD_MAX_BEARING_DELTA_DEGREES
+                && Math.abs(currentDistanceMeters - heldDistanceMeters)
+                <= DIRECTION_HOLD_MAX_DISPLACEMENT_METERS;
+    }
+
+    static boolean canReplaceLocation(
+            float candidateAccuracyMeters,
+            float currentAccuracyMeters,
+            boolean significantlyNewer
+    ) {
+        if (candidateAccuracyMeters <= 0f || currentAccuracyMeters <= 0f) {
+            return true;
+        }
+        float worseBy = candidateAccuracyMeters - currentAccuracyMeters;
+        if (worseBy <= LOCATION_ACCURACY_WORSEN_LIMIT_METERS) {
+            return true;
+        }
+        if (worseBy > LOCATION_ACCURACY_REPLACE_LIMIT_METERS
+                || candidateAccuracyMeters
+                > currentAccuracyMeters * LOCATION_ACCURACY_REPLACE_MULTIPLIER
+                + LOCATION_ACCURACY_REPLACE_LIMIT_METERS) {
+            return false;
+        }
+        return significantlyNewer;
+    }
+
+    static boolean headingSamplesConsistent(
+            float referenceDegrees,
+            float candidateDegrees,
+            float toleranceDegrees
+    ) {
+        return Math.abs(normalizeSignedDegrees(
+                candidateDegrees - referenceDegrees
+        )) <= toleranceDegrees;
     }
 
     static boolean canCommitReacquiredLocation(
