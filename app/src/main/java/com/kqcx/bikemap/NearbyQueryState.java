@@ -29,6 +29,13 @@ final class NearbyQueryState {
         }
     }
 
+    static boolean isLookupPendingForSelection(
+            String selectedNumber,
+            String queryingBikeNumber
+    ) {
+        return selectedNumber != null && selectedNumber.equals(queryingBikeNumber);
+    }
+
     private static final long MIN_INTERVAL_MS = 10_000L;
     private static final double MIN_DISTANCE_METERS = 80d;
 

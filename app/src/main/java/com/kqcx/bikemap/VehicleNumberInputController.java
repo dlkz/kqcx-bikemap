@@ -131,6 +131,7 @@ final class VehicleNumberInputController {
         private final TextView error;
         private final TextView numberSite;
         private final TextView numberSeries;
+        private final View numberRangeRow;
         private final AlertDialog dialog;
 
         private VehicleNumberInputResolver resolver;
@@ -151,6 +152,7 @@ final class VehicleNumberInputController {
             error = content.findViewById(R.id.tvInputError);
             numberSite = content.findViewById(R.id.tvNumberSite);
             numberSeries = content.findViewById(R.id.tvNumberSeries);
+            numberRangeRow = content.findViewById(R.id.numberRangeRow);
             dialog = new AlertDialog.Builder(activity)
                     .setView(content)
                     .setPositiveButton(R.string.confirm, null)
@@ -179,7 +181,7 @@ final class VehicleNumberInputController {
                 input.setText(initialValue);
                 input.setSelection(input.length());
             }
-            content.findViewById(R.id.numberRangeRow).setOnClickListener(
+            numberRangeRow.setOnClickListener(
                     view -> showNumberRangePicker()
             );
             input.addTextChangedListener(new TextWatcher() {
@@ -301,7 +303,16 @@ final class VehicleNumberInputController {
 
             VehicleNumberCatalog.Site selectedSite =
                     catalog.site(resolver.siteId());
-            if (selectedSite != null) {
+            boolean catalogAvailable = !catalog.sites().isEmpty();
+            numberRangeRow.setEnabled(catalogAvailable);
+            numberRangeRow.setAlpha(catalogAvailable ? 1f : 0.5f);
+            if (!catalogLoadFinished) {
+                numberSite.setText(R.string.number_catalog_loading);
+                numberSeries.setText("");
+            } else if (!catalogAvailable) {
+                numberSite.setText(R.string.number_catalog_unavailable);
+                numberSeries.setText("");
+            } else if (selectedSite != null) {
                 numberSite.setText(selectedSite.name);
                 numberSeries.setText(activity.getString(
                         R.string.number_series_title_format,
@@ -327,6 +338,11 @@ final class VehicleNumberInputController {
                     numberSite.setText(R.string.number_catalog_loading);
                     numberSeries.setText("");
                     showError(R.string.number_catalog_loading);
+                    return;
+                case CATALOG_UNAVAILABLE:
+                    numberSite.setText(R.string.number_catalog_unavailable);
+                    numberSeries.setText("");
+                    showError(R.string.number_catalog_unavailable);
                     return;
                 case DIRECT:
                     numberSite.setText(R.string.input_number_direct_title);
@@ -424,6 +440,9 @@ final class VehicleNumberInputController {
 
         private void showNumberRangePicker() {
             List<VehicleNumberCatalog.Site> sites = catalog.sites();
+            if (sites.isEmpty()) {
+                return;
+            }
             String[] titles = new String[sites.size()];
             String[] subtitles = new String[sites.size()];
             for (int index = 0; index < sites.size(); index++) {

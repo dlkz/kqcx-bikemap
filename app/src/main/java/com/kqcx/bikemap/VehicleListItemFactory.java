@@ -56,28 +56,7 @@ final class VehicleListItemFactory {
                 new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1)
         );
 
-        TextView action = textView(
-                context.getString(R.string.action_locate),
-                13,
-                R.color.control_accent_text,
-                true
-        );
-        action.setGravity(Gravity.CENTER);
-        action.setClickable(true);
-        action.setFocusable(true);
-        action.setContentDescription(
-                context.getString(R.string.action_locate) + " " + bike.number
-        );
-        TypedValue actionBackground = new TypedValue();
-        if (context.getTheme().resolveAttribute(
-                android.R.attr.selectableItemBackgroundBorderless,
-                actionBackground,
-                true
-        )) {
-            Drawable background = context.getDrawable(actionBackground.resourceId);
-            action.setBackground(background);
-        }
-        action.setOnClickListener(view -> host.locate(bike));
+        TextView action = createLocateAction(bike);
         titleRow.addView(action, new LinearLayout.LayoutParams(dp(48), dp(48)));
         card.addView(titleRow);
 
@@ -142,6 +121,17 @@ final class VehicleListItemFactory {
                 new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1)
         );
 
+        TextView action = createLocateAction(bike);
+        row.addView(
+                action,
+                new LinearLayout.LayoutParams(dp(48), dp(48))
+        );
+
+        row.setOnClickListener(view -> host.select(bike));
+        return row;
+    }
+
+    private TextView createLocateAction(Bike bike) {
         TextView action = textView(
                 context.getString(R.string.action_locate),
                 13,
@@ -149,13 +139,22 @@ final class VehicleListItemFactory {
                 true
         );
         action.setGravity(Gravity.CENTER);
-        row.addView(
-                action,
-                new LinearLayout.LayoutParams(dp(48), ViewGroup.LayoutParams.WRAP_CONTENT)
+        action.setClickable(true);
+        action.setFocusable(true);
+        action.setContentDescription(
+                context.getString(R.string.action_locate) + " " + bike.number
         );
-
-        row.setOnClickListener(view -> host.select(bike));
-        return row;
+        TypedValue actionBackground = new TypedValue();
+        if (context.getTheme().resolveAttribute(
+                android.R.attr.selectableItemBackgroundBorderless,
+                actionBackground,
+                true
+        )) {
+            Drawable background = context.getDrawable(actionBackground.resourceId);
+            action.setBackground(background);
+        }
+        action.setOnClickListener(view -> host.locate(bike));
+        return action;
     }
 
     private TextView textView(String text, int sizeSp, int colorRes, boolean bold) {

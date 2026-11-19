@@ -24,15 +24,18 @@ import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Pattern;
 
 /**
  * 本机诊断日志：事件骨架常开，详细内容按需打开，崩溃单独留痕。
  *
  * <p>口径：</p>
  * <ul>
- *   <li>只写本机 {@code filesDir/diagnose/}，不联网、不上传；导出由用户在「关于」页
- *       主动触发，走系统分享，应用不经手网络；</li>
+ *   <li>持久化日志只写本机 {@code filesDir/diagnose/}，不联网、不上传；Debug 版本
+ *       还会镜像到 logcat，Release 不同步系统日志；导出由用户在「关于」页主动触发，
+ *       走系统分享，应用不经手网络；</li>
  *   <li>不记录坐标原值、完整车辆编号、凭据或任何用户输入内容；</li>
+ *   <li>第三方接口返回正文只允许用于界面展示，调用方不得传给任何日志方法；</li>
  *   <li>事件日志按大小滚动（两个文件封顶），崩溃文件保留最近若干份；
  *       单文件和单条记录都有字节上限；</li>
  *   <li>写入同步完成——崩溃前最后几条不能丢，而那恰恰是最有价值的一段。</li>
@@ -62,6 +65,8 @@ final class DiagnosticLog {
      */
     private static final String CRASH_TIME_FORMAT = "yyyyMMdd-HHmmss.SSS";
     private static final String EXPORT_TIME_FORMAT = "yyyyMMdd-HHmmss";
+    private static final Pattern VEHICLE_NUMBER_PATTERN =
+            Pattern.compile("(?<!\\d)\\d{9}(?!\\d)");
 
     private static final Object LOCK = new Object();
     private static final SimpleDateFormat LINE_TIME =
@@ -75,6 +80,8 @@ final class DiagnosticLog {
     private static File logDir;
     private static boolean detailEnabled;
     private static boolean crashHandlerInstalled;
+    /** 清除操作推进代次；清除前发起的导出不得继续写入或分享。 */
+    private static long exportGeneration;
 
     private DiagnosticLog() {
     }
@@ -89,8 +96,10 @@ final class DiagnosticLog {
             appContext = app;
             logDir = new File(app.getFilesDir(), DIR_NAME);
             if (!logDir.exists() && !logDir.mkdirs()) {
-                Log.w(ANDROID_TAG, "diagnostic log directory unavailable");
+                debugWarn("diagnostic log directory unavailable");
             }
+            repairNulBytes(new File(logDir, EVENT_FILE));
+            repairNulBytes(new File(logDir, EVENT_BACKUP));
             detailEnabled = prefs(app).getBoolean(PREF_DETAIL, false);
         }
         installCrashHandler();
@@ -127,12 +136,28 @@ final class DiagnosticLog {
         return detailEnabled;
     }
 
+    static long captureExportGeneration() {
+        synchronized (LOCK) {
+            return exportGeneration;
+        }
+    }
+
+    static boolean isExportCurrent(long generation, File report) {
+        synchronized (LOCK) {
+            return generation == exportGeneration
+                    && report != null
+                    && report.isFile()
+                    && report.length() > 0L;
+        }
+    }
+
     /**
      * 删除应用自己保存的诊断记录；只处理已知日志文件和导出报告，不删除目录或用户数据。
      */
     static boolean clearAll(Context context) {
         Context app = context.getApplicationContext();
         synchronized (LOCK) {
+            exportGeneration++;
             File dir = logDir != null ? logDir : new File(app.getFilesDir(), DIR_NAME);
             boolean logsDeleted = deleteFiles(dir, (ignored, name) ->
                     EVENT_FILE.equals(name)
@@ -198,40 +223,51 @@ final class DiagnosticLog {
      * 把事件日志与崩溃记录合成一份报告写到缓存目录，返回该文件；调用方负责用
      * FileProvider 分享。缓存目录随系统回收，不留长期副本。
      */
-    static File exportReport(Context context) throws IOException {
+    static File exportReport(Context context, long requestedGeneration) throws IOException {
         Context app = context.getApplicationContext();
         File dir = logDir;
         if (dir == null) {
             throw new IOException("log directory unavailable");
         }
         File exportDir = new File(app.getCacheDir(), EXPORT_DIR);
-        if (!exportDir.exists() && !exportDir.mkdirs()) {
-            throw new IOException("export directory unavailable");
-        }
-        File target;
         synchronized (LOCK) {
+            if (requestedGeneration != exportGeneration) {
+                throw new ExportCancelledException();
+            }
+            if (!exportDir.exists() && !exportDir.mkdirs()) {
+                throw new IOException("export directory unavailable");
+            }
             String stamp = EXPORT_TIME.format(new Date());
-            target = new File(exportDir, "bikemap-log-" + stamp + ".txt");
+            File target = File.createTempFile(
+                    "bikemap-log-" + stamp + "-",
+                    ".txt",
+                    exportDir
+            );
             int detailedRecords = countDetailRecords(new File(dir, EVENT_BACKUP))
                     + countDetailRecords(new File(dir, EVENT_FILE));
-            try (Writer writer = new OutputStreamWriter(
-                    new FileOutputStream(target, false),
-                    StandardCharsets.UTF_8
-            )) {
-                appendHeader(writer, app, detailedRecords);
-                appendSection(writer, "事件日志（较早）", new File(dir, EVENT_BACKUP));
-                appendSection(writer, "事件日志", new File(dir, EVENT_FILE));
-                List<File> crashes = crashFiles();
-                for (File crash : crashes) {
-                    appendSection(writer, "崩溃记录 " + crash.getName(), crash);
+            try {
+                try (Writer writer = new OutputStreamWriter(
+                        new FileOutputStream(target, false),
+                        StandardCharsets.UTF_8
+                )) {
+                    appendHeader(writer, app, detailedRecords);
+                    appendSection(writer, "事件日志（较早）", new File(dir, EVENT_BACKUP));
+                    appendSection(writer, "事件日志", new File(dir, EVENT_FILE));
+                    List<File> crashes = crashFiles();
+                    for (File crash : crashes) {
+                        appendSection(writer, "崩溃记录 " + crash.getName(), crash);
+                    }
+                    if (crashes.isEmpty()) {
+                        writer.write("\n===== 崩溃记录 =====\n（无）\n");
+                    }
                 }
-                if (crashes.isEmpty()) {
-                    writer.write("\n===== 崩溃记录 =====\n（无）\n");
-                }
+            } catch (IOException | RuntimeException exception) {
+                target.delete();
+                throw exception;
             }
+            pruneExports(exportDir, target);
+            return target;
         }
-        pruneExports(exportDir, target);
-        return target;
     }
 
     private static void appendHeader(
@@ -297,11 +333,13 @@ final class DiagnosticLog {
                 new FileInputStream(file),
                 StandardCharsets.UTF_8
         )) {
+            StringBuilder content = new StringBuilder();
             char[] buffer = new char[4096];
             int read;
             while ((read = reader.read(buffer)) > 0) {
-                report.write(buffer, 0, read);
+                content.append(buffer, 0, read);
             }
+            report.write(sanitizeForLog(content.toString()));
         } catch (IOException exception) {
             report.write("（读取失败：" + exception.getMessage() + "）");
         }
@@ -330,17 +368,18 @@ final class DiagnosticLog {
     }
 
     private static void write(String level, String tag, String message, Throwable throwable) {
+        String safeMessage = sanitizeForLog(message);
+        if (BuildConfig.DEBUG) {
+            Log.println(levelToPriority(level), ANDROID_TAG, tag + ": " + safeMessage);
+        }
         if (appContext == null) {
-            Log.println(levelToPriority(level), ANDROID_TAG, tag + ": " + message);
             return;
         }
-        // 仍然同步到 logcat，方便 adb 现场调试。
-        Log.println(levelToPriority(level), ANDROID_TAG, tag + ": " + message);
         synchronized (LOCK) {
             if (logDir == null) {
                 return;
             }
-            String record = formatEventRecord(level, tag, message, throwable);
+            String record = formatEventRecord(level, tag, safeMessage, throwable);
             File current = new File(logDir, EVENT_FILE);
             if (current.length() > 0
                     && current.length() + utf8Length(record) > MAX_EVENT_BYTES) {
@@ -365,9 +404,8 @@ final class DiagnosticLog {
                         MAX_EVENT_MESSAGE_BYTES
                 ));
         if (throwable != null) {
-            line.append('\n').append(stackTraceOf(
-                    throwable,
-                    MAX_EVENT_STACK_CHARS
+            line.append('\n').append(sanitizeForLog(
+                    stackTraceOf(throwable, MAX_EVENT_STACK_CHARS)
             ));
         }
         return truncateUtf8(
@@ -393,21 +431,67 @@ final class DiagnosticLog {
     private static void rollEventLog(File current) {
         File backup = new File(logDir, EVENT_BACKUP);
         if (backup.exists() && !backup.delete()) {
-            Log.w(ANDROID_TAG, "could not rotate event log");
+            debugWarn("could not rotate event log");
         }
         if (!current.renameTo(backup)) {
-            Log.w(ANDROID_TAG, "could not rotate event log");
+            debugWarn("could not rotate event log");
+        }
+    }
+
+    private static void debugWarn(String message) {
+        if (BuildConfig.DEBUG) {
+            Log.w(ANDROID_TAG, message);
         }
     }
 
     private static void appendText(File file, String text) {
-        try (Writer writer = new OutputStreamWriter(
-                new FileOutputStream(file, true),
-                StandardCharsets.UTF_8
-        )) {
-            writer.write(text);
+        try {
+            writeText(file, text, true);
         } catch (IOException ignored) {
             // 诊断日志写失败不能影响主流程。
+        }
+    }
+
+    private static void writeText(File file, String text, boolean append) throws IOException {
+        try (FileOutputStream output = new FileOutputStream(file, append);
+             Writer writer = new OutputStreamWriter(output, StandardCharsets.UTF_8)) {
+            writer.write(text);
+            writer.flush();
+            output.getFD().sync();
+        }
+    }
+
+    private static void repairNulBytes(File file) {
+        if (file == null || !file.isFile() || file.length() == 0L) {
+            return;
+        }
+        StringBuilder content = new StringBuilder();
+        boolean changed = false;
+        try (Reader reader = new InputStreamReader(
+                new FileInputStream(file),
+                StandardCharsets.UTF_8
+        )) {
+            char[] buffer = new char[4096];
+            int read;
+            while ((read = reader.read(buffer)) > 0) {
+                for (int index = 0; index < read; index++) {
+                    char value = buffer[index];
+                    if (value == '\0') {
+                        value = '\n';
+                        changed = true;
+                    }
+                    content.append(value);
+                }
+            }
+        } catch (IOException ignored) {
+            return;
+        }
+        if (changed) {
+            try {
+                writeText(file, content.toString(), false);
+            } catch (IOException ignored) {
+                // Existing diagnostics remain best-effort.
+            }
         }
     }
 
@@ -432,14 +516,11 @@ final class DiagnosticLog {
                     .append(' ').append(Build.MODEL).append("\n\n");
             content.append(stackTraceOf(throwable, MAX_CRASH_STACK_CHARS));
             String crashText = truncateUtf8(
-                    content.toString(),
+                    sanitizeForLog(content.toString()),
                     (int) MAX_CRASH_BYTES
             );
-            try (Writer writer = new OutputStreamWriter(
-                    new FileOutputStream(file, false),
-                    StandardCharsets.UTF_8
-            )) {
-                writer.write(crashText);
+            try {
+                writeText(file, crashText, false);
             } catch (IOException ignored) {
                 return;
             }
@@ -453,6 +534,14 @@ final class DiagnosticLog {
             throwable.printStackTrace(printer);
         }
         return buffer.content();
+    }
+
+    static String sanitizeForLog(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        String withoutNuls = value.replace('\0', '\n');
+        return VEHICLE_NUMBER_PATTERN.matcher(withoutNuls).replaceAll("***");
     }
 
     private static int utf8Length(String value) {
@@ -592,6 +681,12 @@ final class DiagnosticLog {
         sorted.sort(Comparator.comparingLong(File::lastModified).reversed());
         for (int index = MAX_EXPORT_FILES - 1; index < sorted.size(); index++) {
             sorted.get(index).delete();
+        }
+    }
+
+    static final class ExportCancelledException extends IOException {
+        ExportCancelledException() {
+            super("export invalidated by clear");
         }
     }
 

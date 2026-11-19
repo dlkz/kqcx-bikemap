@@ -8,6 +8,7 @@ final class VehicleNumberInputResolver {
     enum Status {
         EMPTY,
         CATALOG_LOADING,
+        CATALOG_UNAVAILABLE,
         DIRECT,
         RESOLVED,
         CANDIDATES,
@@ -95,6 +96,12 @@ final class VehicleNumberInputResolver {
         }
         if (!catalogLoaded && raw.length() != VehicleNumberCatalog.NUMBER_LENGTH) {
             return Result.simple(Status.CATALOG_LOADING);
+        }
+        if (catalogLoaded
+                && catalog.sites().isEmpty()
+                && (raw.length() == VehicleNumberCatalog.TAIL_LENGTH
+                || raw.length() == 4)) {
+            return Result.simple(Status.CATALOG_UNAVAILABLE);
         }
         if (raw.length() == VehicleNumberCatalog.NUMBER_LENGTH) {
             String normalized = VehicleNumberCatalog.normalize(raw);

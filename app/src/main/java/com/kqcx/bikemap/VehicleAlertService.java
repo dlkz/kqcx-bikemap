@@ -396,11 +396,15 @@ public final class VehicleAlertService extends Service {
                         }
 
                         @Override
-                        public void onError(String message) {
+                        public void onError(BikeRepository.RepositoryError error) {
                             if (!isActiveCheck(generation)) {
                                 return;
                             }
-                            DiagnosticLog.warn(TAG, "Vehicle alert query failed: " + message);
+                            // Upstream text must stay out of persisted diagnostics.
+                            DiagnosticLog.warn(
+                                    TAG,
+                                    "Vehicle alert query failed code=" + error.code()
+                            );
                             finishCheck(generation, false);
                         }
                     }
@@ -738,13 +742,14 @@ public final class VehicleAlertService extends Service {
                     }
 
                     @Override
-                    public void onError(String message) {
+                    public void onError(BikeRepository.RepositoryError error) {
                         if (!isActiveCheck(generation)) {
                             return;
                         }
                         DiagnosticLog.warn(
                                 TAG,
-                                "Vehicle alert supplemental query failed: " + message
+                                "Vehicle alert supplemental query failed code="
+                                        + error.code()
                         );
                         onFailure.run();
                     }

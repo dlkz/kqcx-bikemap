@@ -19,9 +19,12 @@ import java.io.File;
 import java.io.IOException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 
 public final class AboutActivity extends BaseActivity {
     private final ExecutorService exportExecutor = Executors.newSingleThreadExecutor();
+    private boolean exportInProgress;
+    private boolean clearInProgress;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -48,6 +51,7 @@ public final class AboutActivity extends BaseActivity {
         findViewById(R.id.rowAboutDiagnosticsClear)
                 .setOnClickListener(view -> confirmClearDiagnostics());
         refreshDiagnosticsSummary();
+        updateDiagnosticsActions();
     }
 
     private void refreshDiagnosticsSummary() {
@@ -60,24 +64,51 @@ public final class AboutActivity extends BaseActivity {
      * 去哪里由用户选（微信 / 邮件 / 文件管理）。
      */
     private void shareDiagnostics() {
-        exportExecutor.execute(() -> {
-            File report;
-            try {
-                report = DiagnosticLog.exportReport(this);
-            } catch (IOException | RuntimeException exception) {
-                runOnUiThread(() -> showDiagnosticsExportFailed());
-                return;
-            }
-            runOnUiThread(() -> {
-                if (isFinishing() || isDestroyed()) {
+        if (exportInProgress || clearInProgress || isFinishing() || isDestroyed()) {
+            return;
+        }
+        long exportGeneration = DiagnosticLog.captureExportGeneration();
+        exportInProgress = true;
+        updateDiagnosticsActions();
+        try {
+            exportExecutor.execute(() -> {
+                File report;
+                try {
+                    report = DiagnosticLog.exportReport(this, exportGeneration);
+                } catch (DiagnosticLog.ExportCancelledException exception) {
+                    runOnUiThread(() -> finishDiagnosticsExport(true, false));
+                    return;
+                } catch (IOException | RuntimeException exception) {
+                    runOnUiThread(() -> finishDiagnosticsExport(false, true));
                     return;
                 }
-                shareDiagnosticsReport(report);
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) {
+                        return;
+                    }
+                    exportInProgress = false;
+                    updateDiagnosticsActions();
+                    if (!DiagnosticLog.isExportCurrent(exportGeneration, report)) {
+                        refreshDiagnosticsSummary();
+                        showDiagnosticsExportCancelled();
+                        return;
+                    }
+                    shareDiagnosticsReport(report, exportGeneration);
+                });
             });
-        });
+        } catch (RejectedExecutionException exception) {
+            exportInProgress = false;
+            updateDiagnosticsActions();
+            showDiagnosticsExportFailed();
+        }
     }
 
-    private void shareDiagnosticsReport(File report) {
+    private void shareDiagnosticsReport(File report, long exportGeneration) {
+        if (!DiagnosticLog.isExportCurrent(exportGeneration, report)) {
+            showDiagnosticsExportCancelled();
+            refreshDiagnosticsSummary();
+            return;
+        }
         try {
             Uri uri = FileProvider.getUriForFile(
                     this,
@@ -98,6 +129,20 @@ public final class AboutActivity extends BaseActivity {
         refreshDiagnosticsSummary();
     }
 
+    private void finishDiagnosticsExport(boolean cancelled, boolean failed) {
+        if (isFinishing() || isDestroyed()) {
+            return;
+        }
+        exportInProgress = false;
+        updateDiagnosticsActions();
+        if (cancelled) {
+            refreshDiagnosticsSummary();
+            showDiagnosticsExportCancelled();
+        } else if (failed) {
+            showDiagnosticsExportFailed();
+        }
+    }
+
     private void showDiagnosticsExportFailed() {
         if (isFinishing() || isDestroyed()) {
             return;
@@ -106,20 +151,49 @@ public final class AboutActivity extends BaseActivity {
                 .show();
     }
 
+    private void showDiagnosticsExportCancelled() {
+        Toast.makeText(
+                this,
+                R.string.about_diagnostics_export_cancelled,
+                Toast.LENGTH_SHORT
+        ).show();
+    }
+
+    private void updateDiagnosticsActions() {
+        boolean enabled = !exportInProgress && !clearInProgress;
+        View export = findViewById(R.id.rowAboutDiagnosticsExport);
+        View clear = findViewById(R.id.rowAboutDiagnosticsClear);
+        export.setEnabled(enabled);
+        export.setAlpha(enabled ? 1f : 0.5f);
+        clear.setEnabled(enabled);
+        clear.setAlpha(enabled ? 1f : 0.5f);
+    }
+
     @Override
     protected void onDestroy() {
-        exportExecutor.shutdown();
+        exportExecutor.shutdownNow();
         super.onDestroy();
     }
 
     private void confirmClearDiagnostics() {
+        if (exportInProgress || clearInProgress) {
+            return;
+        }
         new AlertDialog.Builder(this)
                 .setTitle(R.string.about_diagnostics_clear)
                 .setMessage(R.string.about_diagnostics_clear_message)
                 .setPositiveButton(
                         R.string.about_diagnostics_clear_action,
                         (dialog, which) -> {
-                            boolean cleared = DiagnosticLog.clearAll(this);
+                            clearInProgress = true;
+                            updateDiagnosticsActions();
+                            boolean cleared;
+                            try {
+                                cleared = DiagnosticLog.clearAll(this);
+                            } finally {
+                                clearInProgress = false;
+                                updateDiagnosticsActions();
+                            }
                             refreshDiagnosticsSummary();
                             Toast.makeText(
                                     this,

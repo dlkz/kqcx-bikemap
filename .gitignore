@@ -42,3 +42,9 @@ docs/developer-data/vehicle-number/*明细*.csv
 
 # 本机维护资料：不进入公开仓库
 docs/reminder-implementation-comparison.md
+docs/change-reviews/
+HANDOFF.md
+_backups/
+.codex-backups/
+*.bak
+*.bak-*

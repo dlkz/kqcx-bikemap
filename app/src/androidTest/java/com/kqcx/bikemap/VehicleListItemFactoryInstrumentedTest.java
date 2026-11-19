@@ -91,6 +91,10 @@ public final class VehicleListItemFactoryInstrumentedTest {
         LinearLayout titleRow = (LinearLayout) ((LinearLayout) card).getChildAt(0);
         titleRow.getChildAt(1).performClick();
         assertEquals(1, locateCount.get());
+        View rowAction = ((LinearLayout) row).getChildAt(2);
+        assertTrue(rowAction.isClickable());
+        rowAction.performClick();
+        assertEquals(2, locateCount.get());
         card.performClick();
         row.performClick();
         assertEquals(2, selectCount.get());

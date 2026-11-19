@@ -64,4 +64,15 @@ public final class BikeRepositoryTest {
         assertEquals("车辆已出租", receivedMessage[0]);
         assertFalse(errorCalled[0]);
     }
+
+    @Test
+    public void repositoryErrorKeepsLogCodeSeparateFromUiMessage() {
+        BikeRepository.RepositoryError error = new BikeRepository.RepositoryError(
+                BikeRepository.Error.SERVICE,
+                "第三方接口文案"
+        );
+
+        assertEquals(BikeRepository.Error.SERVICE, error.code());
+        assertEquals("第三方接口文案", error.userMessage());
+    }
 }

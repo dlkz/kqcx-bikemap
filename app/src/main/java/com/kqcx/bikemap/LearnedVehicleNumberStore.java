@@ -14,8 +14,9 @@ import java.util.Map;
 
 /**
  * Vehicle-number to campus hints the app picked up while the user looked up a
- * bike by number.  It only ever supplements the catalog bundled in
- * {@code assets/vehicle_number_catalog.json}; it never replaces it.
+ * bike by number.  It never replaces an exact number bundled in
+ * {@code assets/vehicle_number_catalog.json}, but an exact learned hint takes
+ * precedence over the catalog's series-level {@code seed} fallback.
  *
  * <p>This is local user data: it records which numbers were looked up.  It is
  * kept in the same preferences file as the rest of the app settings, is capped
@@ -24,6 +25,7 @@ import java.util.Map;
  */
 final class LearnedVehicleNumberStore {
     static final String PREF_KEY = "learned_vehicle_numbers";
+    private static final String PREF_CLEAR_GENERATION = "learned_vehicle_numbers_clear_generation";
     static final int MAX_ENTRIES = 500;
 
     static final class Entry {
@@ -44,7 +46,7 @@ final class LearnedVehicleNumberStore {
 
     private final SharedPreferences preferences;
 
-    private LearnedVehicleNumberStore(SharedPreferences preferences) {
+    LearnedVehicleNumberStore(SharedPreferences preferences) {
         this.preferences = preferences;
     }
 
@@ -95,8 +97,25 @@ final class LearnedVehicleNumberStore {
         persist(learned.values());
     }
 
+    synchronized long clearGeneration() {
+        return preferences.getLong(PREF_CLEAR_GENERATION, 0L);
+    }
+
+    synchronized void rememberIfCurrent(
+            long expectedClearGeneration,
+            String number,
+            String siteName
+    ) {
+        if (expectedClearGeneration == clearGeneration()) {
+            remember(number, siteName);
+        }
+    }
+
     synchronized void clear() {
-        preferences.edit().remove(PREF_KEY).apply();
+        preferences.edit()
+                .remove(PREF_KEY)
+                .putLong(PREF_CLEAR_GENERATION, clearGeneration() + 1L)
+                .apply();
     }
 
     /**

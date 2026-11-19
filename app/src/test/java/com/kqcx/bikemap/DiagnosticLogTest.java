@@ -25,4 +25,16 @@ public final class DiagnosticLogTest {
             file.delete();
         }
     }
+
+    @Test
+    public void sanitizesVehicleNumbersAndNulBytes() {
+        assertEquals(
+                "vehicle *** unknown 1234567890\n\nnext",
+                DiagnosticLog.sanitizeForLog(
+                        "vehicle 123456789 unknown 1234567890\n"
+                                + '\0'
+                                + "next"
+                )
+        );
+    }
 }

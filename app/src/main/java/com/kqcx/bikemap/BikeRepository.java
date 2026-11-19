@@ -45,7 +45,7 @@ public final class BikeRepository {
     public interface Callback {
         void onSuccess(List<Bike> bikes, long fetchedAt);
 
-        void onError(String message);
+        void onError(RepositoryError error);
     }
 
     /** 按编号点名查单辆车的回调；查不到这辆车时 bike 为 null。 */
@@ -74,6 +74,25 @@ public final class BikeRepository {
         }
     }
 
+    public static final class RepositoryError {
+        private final Error code;
+        private final String userMessage;
+
+        RepositoryError(Error code, String userMessage) {
+            this.code = code;
+            this.userMessage = userMessage;
+        }
+
+        public Error code() {
+            return code;
+        }
+
+        /** UI-only text. It may come from the upstream service and must not be logged. */
+        public String userMessage() {
+            return userMessage;
+        }
+    }
+
     private final Context context;
     private final Object executorLock = new Object();
     private ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -99,8 +118,8 @@ public final class BikeRepository {
                 );
                 mainHandler.post(() -> callback.onSuccess(bikes, System.currentTimeMillis()));
             } catch (Exception exception) {
-                String finalMessage = toUserMessage(exception);
-                mainHandler.post(() -> callback.onError(finalMessage));
+                RepositoryError error = repositoryError(exception);
+                mainHandler.post(() -> callback.onError(error));
             }
         });
     }
@@ -289,7 +308,7 @@ public final class BikeRepository {
 
     /**
      * 统一校验接口信封。errorCode 非 0 表示服务端业务错误，抛出带 resultMsg 的
-     * ServiceException；resultMsg 缺失或不安全时由 {@link #safeServiceMessage}
+     * ServiceException；resultMsg 缺失或不安全时由 {@link #safeDisplayMessage}
      * 回落为通用服务提示。
      */
     private void throwIfEnvelopeError(JSONObject root) throws ServiceException {
@@ -299,7 +318,7 @@ public final class BikeRepository {
         }
         throw new ServiceException(
                 errorCode,
-                safeServiceMessage(root.optString("resultMsg", ""))
+                safeDisplayMessage(root.optString("resultMsg", ""))
         );
     }
 
@@ -408,19 +427,30 @@ public final class BikeRepository {
         if (exception instanceof ServiceException) {
             return exception.getMessage();
         }
+        return context.getString(errorCode(exception).messageRes);
+    }
+
+    private RepositoryError repositoryError(Exception exception) {
+        return new RepositoryError(errorCode(exception), toUserMessage(exception));
+    }
+
+    private Error errorCode(Exception exception) {
+        if (exception instanceof ServiceException) {
+            return Error.SERVICE;
+        }
         if (exception instanceof SocketTimeoutException) {
-            return context.getString(Error.TIMEOUT.messageRes);
+            return Error.TIMEOUT;
         }
         if (exception instanceof UnknownHostException) {
-            return context.getString(Error.NETWORK.messageRes);
+            return Error.NETWORK;
         }
         if (exception instanceof IOException) {
-            return context.getString(Error.NETWORK.messageRes);
+            return Error.NETWORK;
         }
         if (exception instanceof org.json.JSONException) {
-            return context.getString(Error.PARSE.messageRes);
+            return Error.PARSE;
         }
-        return context.getString(Error.UNKNOWN.messageRes);
+        return Error.UNKNOWN;
     }
 
     private static final class ServiceException extends Exception {
@@ -455,13 +485,19 @@ public final class BikeRepository {
     private String serviceMessageFromResponse(String response) {
         try {
             JSONObject root = new JSONObject(response);
-            return safeServiceMessage(root.optString("resultMsg", ""));
+            return safeDisplayMessage(root.optString("resultMsg", ""));
         } catch (org.json.JSONException ignored) {
             return context.getString(Error.SERVICE.messageRes);
         }
     }
 
-    private String safeServiceMessage(String message) {
+    /**
+     * Filters untrusted upstream text for UI display only.
+     *
+     * <p>This is not a diagnostic-log sanitizer. Callers must never pass the
+     * returned or original upstream message to {@link DiagnosticLog}.</p>
+     */
+    private String safeDisplayMessage(String message) {
         if (message == null) {
             return context.getString(Error.SERVICE.messageRes);
         }

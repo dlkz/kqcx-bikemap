@@ -469,10 +469,12 @@ public final class VehicleFinderActivity extends BaseActivity
             return;
         }
         if (!isLocationEnabled()) {
+            // System location is a page-level prerequisite; the shared action owns
+            // the settings button so the BLE panel does not render a duplicate.
             showBleState(
                     R.string.finder_ble_location_off,
-                    View.VISIBLE,
-                    R.string.finder_open_location_settings
+                    View.GONE,
+                    R.string.finder_ble_start
             );
             return;
         }

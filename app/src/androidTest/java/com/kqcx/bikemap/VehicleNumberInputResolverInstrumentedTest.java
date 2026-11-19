@@ -70,5 +70,24 @@ public final class VehicleNumberInputResolverInstrumentedTest {
         assertEquals(VehicleNumberInputResolver.Status.CATALOG_LOADING, loading.status);
         direct = loadingResolver.resolve("999999999");
         assertEquals(VehicleNumberInputResolver.Status.DIRECT, direct.status);
+
+        VehicleNumberInputResolver unavailableResolver =
+                new VehicleNumberInputResolver(
+                        VehicleNumberCatalog.empty(),
+                        true,
+                        -1,
+                        ""
+                );
+        VehicleNumberInputResolver.Result unavailable =
+                unavailableResolver.resolve("331");
+        assertEquals(
+                VehicleNumberInputResolver.Status.CATALOG_UNAVAILABLE,
+                unavailable.status
+        );
+        direct = unavailableResolver.resolve("999999999");
+        assertEquals(VehicleNumberInputResolver.Status.DIRECT, direct.status);
+        VehicleNumberInputResolver.Result stillIncomplete =
+                unavailableResolver.resolve("12");
+        assertEquals(VehicleNumberInputResolver.Status.INCOMPLETE, stillIncomplete.status);
     }
 }

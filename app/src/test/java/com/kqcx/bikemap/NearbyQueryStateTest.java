@@ -87,4 +87,20 @@ public final class NearbyQueryStateTest {
         assertNull(state.finish(firstGeneration));
         assertTrue(state.isInFlight());
     }
+
+    @Test
+    public void pendingBikeLookupKeepsMatchingSelectionAcrossNearbyRefresh() {
+        assertTrue(NearbyQueryState.isLookupPendingForSelection(
+                "900000001",
+                "900000001"
+        ));
+        assertFalse(NearbyQueryState.isLookupPendingForSelection(
+                "900000001",
+                "900000002"
+        ));
+        assertFalse(NearbyQueryState.isLookupPendingForSelection(
+                "900000001",
+                null
+        ));
+    }
 }

@@ -20,7 +20,7 @@ Input format (columns, UTF-8 with BOM tolerated):
 
     序号, 站点ID, 学校/校区, 车辆编号, 车型
 
-The 车辆编号 column looks like ``="007100151"``.  Numbers are always kept as
+The 车辆编号 column looks like ``="999999999"``.  Numbers are always kept as
 strings so leading zeros survive; the scan exports them as text on purpose.
 Several ``--input`` files are merged into one catalog, so older scans keep
 contributing coverage that a later scan no longer reports.  Pass them in

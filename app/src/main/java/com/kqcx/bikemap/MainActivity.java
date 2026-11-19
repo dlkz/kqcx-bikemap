@@ -256,6 +256,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private Bitmap pendingQrBitmap;
     private boolean pendingOpenWeChatAfterQrSave;
     private boolean permissionDialogShowing;
+    private boolean resumed;
     /** 按编号点名查到的车。它不在附近列表里，重查后要并回地图，避免标记消失。 */
     private Bike queriedBike;
     /** 正在点名查询的车号，用于合并重复请求。 */
@@ -404,10 +405,11 @@ public final class MainActivity extends BaseActivity implements LocationListener
     /**
      * Reads and parses the bundled vehicle-number catalog off the main thread.
      *
-     * <p>Failure keeps the empty placeholder from {@link #onCreate}: the map and
-     * the nearby-vehicle queries keep working, only the number lookup stays
-     * unavailable.  This mirrors the previous synchronous fallback but no longer
-     * blocks startup, so a future, larger catalog cannot stall {@code onCreate}.
+     * <p>Failure keeps the empty placeholder from {@link #onCreate}: the map,
+     * nearby-vehicle queries and full 9-digit direct lookup keep working.  Only
+     * catalog-backed suffix matching and campus/series selection are unavailable.
+     * This mirrors the previous synchronous fallback but no longer blocks startup,
+     * so a future, larger catalog cannot stall {@code onCreate}.
      */
     private void loadVehicleNumberCatalogAsync() {
         Context appContext = getApplicationContext();
@@ -417,7 +419,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
                 loaded = VehicleNumberCatalog.load(appContext);
             } catch (Exception exception) {
                 // 内置目录损坏，或将来被升级成当前版本无法解析的格式时，降级为“无内置编号”
-                // 继续启动：地图、附近车辆查询等主功能可用，只有编号补全不可用，而不是闪退。
+                // 继续启动：完整编号查询仍可用，仅目录辅助的尾号匹配和站点选择不可用。
                 DiagnosticLog.warn(TAG, "vehicle number catalog unavailable; continuing without it", exception);
             }
             VehicleNumberCatalog resolved = loaded;
@@ -1139,7 +1141,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
             return;
         }
 
-        View content = createInfoContent(getString(R.string.usage_notice_message));
+        View content = createInfoContent(getString(R.string.usage_notice_message), true);
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(R.string.usage_notice_title)
                 .setView(content)
@@ -1355,7 +1357,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     private void showPrivacyDialog() {
-        View content = createInfoContent(getString(R.string.privacy_content));
+        View content = createInfoContent(getString(R.string.privacy_content), true);
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(R.string.settings_privacy)
                 .setView(content)
@@ -1384,7 +1386,15 @@ public final class MainActivity extends BaseActivity implements LocationListener
     private View createInfoContent(String message, boolean strongHeadings) {
         View content = LayoutInflater.from(this).inflate(R.layout.dialog_info, null);
         LinearLayout sections = content.findViewById(R.id.infoSections);
+        renderInfoSections(sections, message, strongHeadings);
+        return content;
+    }
 
+    private void renderInfoSections(
+            LinearLayout sections,
+            String message,
+            boolean strongHeadings
+    ) {
         String[] blocks = message.split("\n\n");
         for (String block : blocks) {
             String value = block.trim();
@@ -1463,7 +1473,6 @@ public final class MainActivity extends BaseActivity implements LocationListener
             body.setPadding(0, dp(4), 0, 0);
             sections.addView(body);
         }
-        return content;
     }
 
 
@@ -2605,7 +2614,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
     }
 
     private void loadBikes(GeoPoint center, boolean force) {
-        if (center == null) {
+        if (!resumed || center == null) {
             return;
         }
         long now = System.currentTimeMillis();
@@ -2654,15 +2663,16 @@ public final class MainActivity extends BaseActivity implements LocationListener
                     }
 
                     @Override
-                    public void onError(String message) {
+                    public void onError(BikeRepository.RepositoryError error) {
                         if (isFinishing() || isDestroyed()) {
                             return;
                         }
                         if (!nearbyQueryState.isCurrent(requestGeneration)) {
                             return;
                         }
-                        DiagnosticLog.warn("Net", "nearby error: " + message);
-                        tvStatus.setText(message);
+                        // Upstream text is UI-only and must never enter DiagnosticLog.
+                        DiagnosticLog.warn("Net", "nearby error code=" + error.code());
+                        tvStatus.setText(error.userMessage());
                         finishLoadRequest(requestGeneration);
                     }
                 }
@@ -2722,6 +2732,12 @@ public final class MainActivity extends BaseActivity implements LocationListener
                 bikeDetailPanelController.update(bike);
                 return;
             }
+        }
+        if (NearbyQueryState.isLookupPendingForSelection(
+                selectedNumber,
+                queryingBikeNumber
+        )) {
+            return;
         }
         hideBikePanel();
     }
@@ -3198,6 +3214,9 @@ public final class MainActivity extends BaseActivity implements LocationListener
             return;
         }
         queryingBikeNumber = normalized;
+        LearnedVehicleNumberStore learnedNumberStore =
+                LearnedVehicleNumberStore.get(this);
+        long learnedClearGeneration = learnedNumberStore.clearGeneration();
         // 编号属于用户数据，只记后三位用于对时间线。
         String maskedNumber = "***" + normalized.substring(6);
         DiagnosticLog.event("Query", "lookup " + maskedNumber);
@@ -3236,8 +3255,11 @@ public final class MainActivity extends BaseActivity implements LocationListener
                         if (qrHistoryStore.retentionEnabled()) {
                             String learnedSite = historySiteNameFor(bike);
                             if (!learnedSite.isEmpty()) {
-                                LearnedVehicleNumberStore.get(MainActivity.this)
-                                        .remember(bike.number, learnedSite);
+                                learnedNumberStore.rememberIfCurrent(
+                                        learnedClearGeneration,
+                                        bike.number,
+                                        learnedSite
+                                );
                             }
                         }
                         // 点名定位单车：进入“车定位优先”态（取消居中落点校验、
@@ -3255,7 +3277,8 @@ public final class MainActivity extends BaseActivity implements LocationListener
                             return;
                         }
                         queryingBikeNumber = null;
-                        DiagnosticLog.warn("Query", "error " + maskedNumber + ": " + message);
+                        // Keep the log app-owned; the upstream message remains UI-only.
+                        DiagnosticLog.warn("Query", "error " + maskedNumber);
                         if (selectedBike == null
                                 || !normalized.equals(selectedBike.number)) {
                             return;
@@ -3992,6 +4015,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
     @Override
     protected void onResume() {
         super.onResume();
+        resumed = true;
         DiagnosticLog.event("Main", "resume");
         foregroundInstance = this;
         mapView.onResume();
@@ -4062,6 +4086,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
 
     @Override
     protected void onPause() {
+        resumed = false;
         DiagnosticLog.event("Main", "pause");
         mapCacheDialogGeneration++;
         if (foregroundInstance == this) {
@@ -4076,6 +4101,7 @@ public final class MainActivity extends BaseActivity implements LocationListener
 
     @Override
     protected void onDestroy() {
+        resumed = false;
         uiHandler.removeCallbacks(refreshFromMapCenterRunnable);
         vehicleListPanelController.release();
         vehicleNumberInputController.release();
