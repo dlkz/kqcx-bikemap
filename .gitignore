@@ -36,6 +36,8 @@ secrets.properties
 *.aab
 *.apk.sha256
 *.zip
+!/companion/ble-hardware-test/releases/*.zip
+!/companion/ble-hardware-test/releases/*.zip.sha256
 
 # 受控车辆编号明细：仅本地维护，不进入公开仓库
 docs/developer-data/vehicle-number/*明细*.csv

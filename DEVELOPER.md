@@ -37,6 +37,7 @@ tools/                                 # 目录生成和上传边界检查
 docs/release-notes/                    # 发布说明
 docs/developer-data/vehicle-number/    # 可公开的统计摘要
 LICENSES/                              # 第三方许可证文本
+companion/ble-hardware-test/releases/  # BLE 工具固定发布文件与校验值
 ```
 
 ### 1.3 修改前检查
@@ -281,6 +282,7 @@ $env:ANDROID_SERIAL = "<设备序列号>"
 - README、PRIVACY、Release notes、应用内更新日志和实际行为必须一致。
 - Release notes 写清升级要求、已知限制和准确的 `versionCode`；标签必须指向实际构建 APK 的源码提交。
 - 构建自动递增的 `version.properties` 属于下一次构建记录，不得回退，也不应与旧 Release 标签混为一体。
+- BLE 辅助工具的独立发布 ZIP 和 SHA-256 固定保存在 `companion/ble-hardware-test/releases/`，按版本保留，不覆盖旧文件；除明确要求外，不把 BLE 包附加到 BikeMap Release。
 
 ### 6.2 签名兼容
 
